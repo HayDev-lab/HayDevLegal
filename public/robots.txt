@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+# Armenian Legal Search — public legal search over ARLIS.am
+Sitemap: /sitemap.xml
