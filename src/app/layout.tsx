@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
+import { ThemeProvider } from "@/components/legal/ThemeProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -57,8 +58,23 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#ffffff",
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+  ],
 };
+
+// Inline script to set the theme class BEFORE hydration, preventing flash.
+const themeInitScript = `
+(function() {
+  try {
+    var t = localStorage.getItem('arlis-legal-theme');
+    if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      document.documentElement.classList.add('dark');
+    }
+  } catch (e) {}
+})();
+`;
 
 export default function RootLayout({
   children,
@@ -67,6 +83,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="hy" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
         style={{
@@ -74,7 +93,7 @@ export default function RootLayout({
             "'Noto Sans Armenian','Noto Serif Armenian','DejaVu Sans',var(--font-geist-sans),system-ui,-apple-system,sans-serif",
         }}
       >
-        {children}
+        <ThemeProvider>{children}</ThemeProvider>
         <Toaster />
       </body>
     </html>

@@ -51,7 +51,11 @@ const SYSTEM_PROMPT = `Դու Հայաստանի իրավական տեղեկատ
 4. Եզրակացություն — հնարավոր գործողություններ կամ զգուշացումներ։
 5. Աղբյուրներ — [S1]..[S4] ցուցակ՝ վերնագրերով։`;
 
-function buildUserPrompt(query: string, sources: LegalSource[]): string {
+function buildUserPrompt(
+  query: string,
+  sources: LegalSource[],
+  isFollowUp = false,
+): string {
   const srcBlocks = sources
     .map((s) => {
       const meta: string[] = [];
@@ -74,16 +78,22 @@ ${body}
     })
     .join("\n\n");
 
-  return `ՕԳՏԱՏԻՐՈՋ ՀԱՐԳՒԸ՝
+  const header = isFollowUp
+    ? `ՀՍՏԱԿԵՑՆՈՂ ՀԱՐԳՒԸ (հետևում է նախորդ զրույցին)՝`
+    : `ՕԳՏԱՏԻՐՈՋ ՀԱՐԳՒԸ՝`;
+
+  const footer = isFollowUp
+    ? `Սա հետևող հարց է։ Պատասխանիր համառոտ՝ հղումով նույն աղբյուրներին։ Կարող ես մեջբերել միայն [S1], [S2], [S3], [S4] նշումները։`
+    : `Հիշիր՝ կարող ես մեջբերել միայն [S1], [S2], [S3], [S4] նշումները։ Մի հորինիր նոր աղբյուրային նշումներ։ Եթե տրամադրված աղբյուրները բավարար չեն վստահ պատասխանի համար, հստակ գրիր այդ մասին։\n\nՏրամադրիր պատասխանը նշված կառուցվածքով։`;
+
+  return `${header}
 ${query}
 
 ՏՐԱՄԱԴՐՎԱԾ ԱՂԲՅՈՒՐՆԵՐԸ (քեզ հասանելի միակ աղբյուրներն են)՝
 
 ${srcBlocks}
 
-Հիշիր՝ կարող ես մեջբերել միայն [S1], [S2], [S3], [S4] նշումները։ Մի հորինիր նոր աղբյուրային նշումներ։ Եթե տրամադրված աղբյուրները բավարար չեն վստահ պատասխանի համար, հստակ գրիր այդ մասին։
-
-Տրամադրիր պատասխանը նշված կառուցվածքով։`;
+${footer}`;
 }
 
 /** Validate that a URL belongs to an ARLIS origin. */
@@ -140,7 +150,7 @@ function buildCitations(
 
 export async function POST(req: NextRequest) {
   const requestId = randomUUID();
-  let body: { query?: unknown; sources?: unknown };
+  let body: { query?: unknown; sources?: unknown; history?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -178,6 +188,27 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Optional conversation history for follow-up questions (spec §52).
+  // Each entry: { role: "user"|"assistant", content: string }
+  // We keep at most the last 6 messages to bound context size.
+  const rawHistory = Array.isArray(body.history) ? body.history : [];
+  const history: Array<{ role: "user" | "assistant"; content: string }> = [];
+  for (const h of rawHistory) {
+    if (
+      h &&
+      typeof h === "object" &&
+      (h as { role?: string }).role === "user" ||
+      (h as { role?: string }).role === "assistant"
+    ) {
+      const role = (h as { role: string }).role as "user" | "assistant";
+      const content = typeof (h as { content?: unknown }).content === "string"
+        ? ((h as { content: string }).content).slice(0, 2000)
+        : "";
+      if (content) history.push({ role, content });
+    }
+    if (history.length >= 6) break;
+  }
+
   // ---- Set up SSE stream
   const encoder = new TextEncoder();
   let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -205,29 +236,42 @@ export async function POST(req: NextRequest) {
 
       try {
         const zai = await ZAI.create();
-        const userPrompt = buildUserPrompt(query, safeSources);
+        const userPrompt = buildUserPrompt(query, safeSources, history.length > 0);
+
+        // Build the message sequence. For follow-up questions we include the
+        // conversation history so the model has context, then the new user
+        // prompt with fresh sources.
+        const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+          { role: "system", content: SYSTEM_PROMPT },
+        ];
+        if (history.length > 0) {
+          // Prior conversation (user/assistant turns from previous follow-ups).
+          for (const h of history) {
+            messages.push({ role: h.role, content: h.content });
+          }
+        }
+        messages.push({ role: "user", content: userPrompt });
 
         let full = "";
         let streamBody: ReadableStream<Uint8Array> | null = null;
         try {
           streamBody = (await zai.chat.completions.create({
-            messages: [
-              { role: "system", content: SYSTEM_PROMPT },
-              { role: "user", content: userPrompt },
-            ],
+            messages,
             stream: true,
             thinking: { type: "disabled" },
+            // Cap output length to keep streams under ~30s. The system prompt
+            // already asks for a structured, concise answer; max_tokens is a
+            // hard safety net against runaway 80-111s responses.
+            max_tokens: 1200,
           } as unknown as { stream: true })) as unknown as ReadableStream<Uint8Array>;
         } catch (err) {
           // Fallback: non-streaming call
           console.error("[/api/answer] stream create failed, fallback:", err);
           const resp = (await zai.chat.completions.create({
-            messages: [
-              { role: "system", content: SYSTEM_PROMPT },
-              { role: "user", content: userPrompt },
-            ],
+            messages,
             stream: false,
             thinking: { type: "disabled" },
+            max_tokens: 1200,
           })) as { choices?: Array<{ message?: { content?: string } }> };
           const text = resp.choices?.[0]?.message?.content ?? "";
           const sanitized = sanitizeChunk(text, validIds);
@@ -361,8 +405,13 @@ export async function GET() {
       service: "armenian-legal-answer",
       endpoint: "/api/answer",
       method: "POST",
-      body: { query: "string", sources: "LegalSource[]" },
+      body: {
+        query: "string",
+        sources: "LegalSource[]",
+        history: "{role, content}[] (optional, for follow-up questions)",
+      },
       response: "text/event-stream of AnswerChunk",
+      max_tokens: 1200,
     }),
     { headers: { "content-type": "application/json" } },
   );

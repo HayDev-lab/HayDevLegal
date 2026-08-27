@@ -126,6 +126,16 @@
   :lang(hy) {
     line-height: 1.65;
   }
+  /* Smooth theme transitions */
+  body, button, input, a, div {
+    transition-property: background-color, border-color, color;
+    transition-duration: 150ms;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  /* Focus visibility for keyboard navigation */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
 }
 
 @layer utilities {
@@ -133,6 +143,9 @@
   .scroll-legal {
     scrollbar-width: thin;
     scrollbar-color: oklch(0.8 0 0) transparent;
+  }
+  .dark .scroll-legal {
+    scrollbar-color: oklch(0.4 0 0) transparent;
   }
   .scroll-legal::-webkit-scrollbar {
     width: 8px;
@@ -147,8 +160,14 @@
     border: 2px solid transparent;
     background-clip: content-box;
   }
+  .dark .scroll-legal::-webkit-scrollbar-thumb {
+    background-color: oklch(0.4 0 0);
+  }
   .scroll-legal::-webkit-scrollbar-thumb:hover {
     background-color: oklch(0.7 0 0);
+  }
+  .dark .scroll-legal::-webkit-scrollbar-thumb:hover {
+    background-color: oklch(0.5 0 0);
   }
 
   /* Subtle pulse for "searching" / "thinking" indicators */
@@ -168,6 +187,9 @@
     color: oklch(0.5 0 0);
     animation: blink-caret 1s step-end infinite;
   }
+  .dark .stream-caret::after {
+    color: oklch(0.7 0 0);
+  }
   @keyframes blink-caret {
     0%, 50% { opacity: 1; }
     50.01%, 100% { opacity: 0; }
@@ -179,6 +201,10 @@
     border-radius: 2px;
     padding: 0 1px;
   }
+  .dark .match-hl {
+    background: oklch(0.35 0.08 90);
+    color: oklch(0.95 0.05 90);
+  }
 
   /* Soft entrance for result cards */
   .enter-legal {
@@ -187,5 +213,67 @@
   @keyframes enter-legal {
     from { opacity: 0; transform: translateY(6px); }
     to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Slide-up entrance for follow-up / new UI blocks */
+  .enter-slide-up {
+    animation: enter-slide-up 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+  @keyframes enter-slide-up {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Shimmer skeleton loading */
+  .shimmer-legal {
+    background: linear-gradient(
+      90deg,
+      oklch(0.94 0 0) 25%,
+      oklch(0.97 0 0) 50%,
+      oklch(0.94 0 0) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer-legal 1.5s ease-in-out infinite;
+  }
+  .dark .shimmer-legal {
+    background: linear-gradient(
+      90deg,
+      oklch(0.25 0 0) 25%,
+      oklch(0.3 0 0) 50%,
+      oklch(0.25 0 0) 75%
+    );
+    background-size: 200% 100%;
+  }
+  @keyframes shimmer-legal {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  /* AI answer prose styling */
+  .prose-legal {
+    @apply text-[15px] leading-relaxed;
+  }
+  .prose-legal h1,
+  .prose-legal h2,
+  .prose-legal h3 {
+    @apply font-semibold mt-4 mb-2;
+  }
+  .prose-legal h1 { @apply text-lg; }
+  .prose-legal h2 { @apply text-base; }
+  .prose-legal h3 { @apply text-sm uppercase tracking-wide; }
+  .prose-legal ul,
+  .prose-legal ol {
+    @apply my-2 pl-5;
+  }
+  .prose-legal ul { @apply list-disc; }
+  .prose-legal ol { @apply list-decimal; }
+  .prose-legal li { @apply my-1; }
+  .prose-legal strong { @apply font-semibold; }
+  .prose-legal p { @apply my-2; }
+  .prose-legal code {
+    @apply rounded bg-muted px-1.5 py-0.5 text-[13px] font-mono;
+  }
+  .prose-legal blockquote {
+    @apply border-l-2 border-border pl-3 italic text-muted-foreground my-2;
   }
 }

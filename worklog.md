@@ -85,3 +85,74 @@ Stage Summary:
 - Note: OpenCloud AI runtime is substituted by z-ai-web-dev-sdk (the supported AI runtime in this sandbox). The system prompt, grounding, and citation contract are provider-agnostic and identical to the spec.
 - Next: create 15-minute webDevReview cron job for ongoing QA + feature expansion.
 
+
+---
+Task ID: 2-webdevreview
+Agent: main (cron-triggered webDevReview)
+Task: QA testing + bug fixes + new features (dark mode, follow-up questions, filter chips, markdown rendering, keyboard shortcut) + styling polish.
+
+Work Log:
+
+**QA Findings (via agent-browser):**
+- Bug 1 (CRITICAL): Rapid re-search while AI streaming didn't reset the stream — old AI kept running with stale sources after query change. Root cause: `startedRef.current = true` blocked the effect from re-firing on new sources.
+- Bug 2 (MEDIUM): After clicking Stop (abort), state went to "idle" with no way to restart — no Retry/Start button visible.
+- Bug 3 (MEDIUM): AI streams could take 80-111s (runaway verbosity), risking timeouts.
+- Bug 4 (CRITICAL): Auto-start effect had `start` in its deps. When `start()` called `setTurns([])`, the callback was recreated → effect cleanup ran → aborted the in-flight fetch. Root cause: effect cleanup aborting fetch on dep change, not just unmount.
+
+**Bug Fixes:**
+1. Rapid re-search: added `key={query}` prop to `<AgentAnswer>` in page.tsx → forces clean remount on every new search, tearing down old stream completely.
+2. Abort/Retry UX: added "Սկսել վերլուծությունը" (Start analysis) button when `state === "idle"` and sources exist; after abort, state goes to "done" (not "idle") so Retry button shows.
+3. max_tokens cap: added `max_tokens: 1200` to both streaming and fallback LLM calls → streams now complete in 11-23s (was 80-111s).
+4. Auto-start abort: decoupled effect from `start` callback using `startRef` pattern — effect deps are `[autoStart, sources.length]` only; `start` is called via `startRef.current()`; cleanup only aborts on unmount.
+
+**New Features:**
+1. **Dark mode** (spec suggestion e): `ThemeProvider` using `useSyncExternalStore` (React-recommended for external stores — no hydration mismatch, no setState-in-effect). Theme toggle button in header. Persists to `localStorage('arlis-legal-theme')`. Respects OS `prefers-color-scheme` on first visit. Inline script in `<head>` sets `.dark` class before hydration to prevent flash. All components have `dark:` Tailwind variants.
+2. **Follow-up clarifying question** (spec §52): Input field below AI answer ("Հստակեցնող հարց տալ աղբյուրների հիման վրա..."). Reuses current sources, maintains conversation history (up to 6 turns). API `/api/answer` accepts optional `history: {role, content}[]` parameter. System prompt adjusts for follow-ups (more concise). Prior turns shown as compact context above the latest answer.
+3. **Source-type filter chips** (spec §50): When results span >1 source type (Օրենսդրություն / Վճռաբեկ դատարան / Սահմանադրական դատարան / ՄԻԵՎԴ), filter chips appear with per-type counts. Active filter highlighted; "Բոլորը" (All) resets.
+4. **Markdown rendering** for AI answer: New `MarkdownAnswer` component parses headings (#/##/###), bullet lists (-/*/•), numbered lists (1.), **bold**, *italic*, `code`, > blockquote, and inline [Sn] citations. Citations rendered as superscript links to ARLIS. No raw HTML injection (XSS-safe).
+5. **Keyboard shortcut** `/` (spec suggestion d): Pressing `/` anywhere (except when already in an input) focuses the search box and selects text. Hint shown in compact search bar on desktop.
+6. **Collapsible AI answer**: Chevron up/down toggle to collapse/expand the answer body when done.
+7. **Skeleton loading**: Shimmer-animated placeholder cards during "searching" state (replaces simple spinner-only state).
+
+**Styling Polish:**
+- Full dark mode across all components (SearchBox, SearchResults, AgentAnswer, States, footer, header)
+- Result cards: left accent bar that darkens on hover, improved shadow/border transitions
+- AI answer: proper prose typography (`.prose-legal` utility class with h1-h3, ul/ol, strong, code, blockquote styling)
+- Status pills: emerald (գործունակ) / amber (չի գործունակ) with dark mode variants
+- Smooth theme transitions (150ms cubic-bezier on bg/border/color)
+- Enhanced entrance animations: `enter-legal` (cards), `enter-slide-up` (follow-up, filters)
+- Shimmer skeleton: `shimmer-legal` with gradient animation (light + dark)
+- Custom scrollbar with dark mode thumb colors
+- Focus-visible outlines for keyboard navigation
+- `:lang(hy)` line-height 1.65 for Armenian readability
+
+**API Changes:**
+- `POST /api/answer` now accepts optional `history: [{role: "user"|"assistant", content: string}]` (max 6 entries, 2000 chars each)
+- `max_tokens: 1200` on all LLM calls (streaming + fallback)
+- Follow-up-aware prompt: `buildUserPrompt(query, sources, isFollowUp)` — uses concise header/footer for follow-ups
+- GET handler documents new `history` param + `max_tokens`
+
+**E2E Verification (agent-browser):**
+- Dark mode toggle: `.dark` class applied, `localStorage` persisted, persists across search navigation ✓
+- Auto-start: fires immediately on results mount, no manual click needed ✓ (after startRef fix)
+- AI streams to completion: 11-23s, done event received, citations footer + request_id render ✓
+- Markdown: h2 headings, ul lists, inline [S1] citation links all render ✓
+- Follow-up question: submitted via input, new stream starts with conversation context, answer appears below the follow-up question ✓ (5 citation links in follow-up answer)
+- Rapid re-search: `key={query}` forces remount → new query gets fresh AI stream about the correct topic (Civil Code, not old Criminal Code) ✓
+- Source-type filter chips: appear when >1 type present ✓
+- Keyboard shortcut `/`: focuses search input, selects text ✓
+- Skeleton loading: shimmer cards during search ✓
+- Collapsible AI answer: expand/collapse toggle works ✓
+- Lint: clean (0 errors, 0 warnings) ✓
+- No console errors in dev log ✓
+
+Stage Summary:
+- All 4 bugs fixed and verified ✓
+- 7 new features implemented and verified ✓
+- 10+ styling improvements (dark mode, animations, typography, skeleton) ✓
+- Core invariant maintained: 4 ARLIS results BEFORE AI answer ✓
+- max_tokens cap keeps streams under 25s (was 80-111s) ✓
+- Follow-up questions work with conversation history ✓
+- Dark mode persists across navigation ✓
+- Next: potential future features (historical-version awareness §16, query autocomplete, relevance gold-set test harness)
+

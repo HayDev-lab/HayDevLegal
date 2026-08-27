@@ -5,6 +5,7 @@ import { SearchBox } from "@/components/legal/SearchBox";
 import { SearchResults } from "@/components/legal/SearchResults";
 import { AgentAnswer } from "@/components/legal/AgentAnswer";
 import { SearchingState, ErrorState, EmptyState, HomeHero } from "@/components/legal/States";
+import { ThemeToggle } from "@/components/legal/ThemeToggle";
 import type { LegalSource, SearchResponse } from "@/lib/legal/types";
 import { Scale } from "lucide-react";
 
@@ -101,20 +102,20 @@ export default function Home() {
   const isHome = view === "home";
 
   return (
-    <div className="flex min-h-screen flex-col bg-neutral-50">
+    <div className="flex min-h-screen flex-col bg-neutral-50 dark:bg-neutral-950">
       {/* Header */}
-      <header className="sticky top-0 z-30 border-b border-neutral-200/70 bg-white/85 backdrop-blur-md">
+      <header className="sticky top-0 z-30 border-b border-neutral-200/70 bg-white/85 backdrop-blur-md dark:border-neutral-800/70 dark:bg-neutral-950/85">
         <div className="mx-auto flex h-14 max-w-5xl items-center gap-3 px-4 sm:px-6">
           <button
             type="button"
             onClick={resetHome}
-            className="flex shrink-0 items-center gap-2 text-neutral-900 hover:opacity-80"
+            className="flex shrink-0 items-center gap-2 text-neutral-900 hover:opacity-80 dark:text-neutral-100"
             aria-label="Գլխավոր"
           >
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-neutral-900 text-white">
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-neutral-900 text-white dark:bg-white dark:text-neutral-900">
               <Scale className="h-4 w-4" aria-hidden />
             </span>
-            <span className="hidden text-sm font-semibold tracking-tight sm:inline">
+            <span className="hidden text-sm font-semibold tracking-tight sm:inline dark:text-neutral-100">
               Իրավական որոնում
             </span>
           </button>
@@ -131,6 +132,11 @@ export default function Home() {
               />
             </div>
           )}
+
+          {/* Theme toggle — always visible */}
+          <div className={isHome ? "ml-auto" : "shrink-0"}>
+            <ThemeToggle />
+          </div>
         </div>
       </header>
 
@@ -159,12 +165,12 @@ export default function Home() {
           <div className="space-y-5">
             {/* Query + result count line */}
             <div className="flex items-baseline justify-between gap-2">
-              <p className="text-sm text-neutral-500">
-                <span className="text-neutral-400">Հարցում՝</span>{" "}
-                <span className="font-medium text-neutral-800">{query}</span>
+              <p className="text-sm text-neutral-500 dark:text-neutral-400">
+                <span className="text-neutral-400 dark:text-neutral-500">Հարցում՝</span>{" "}
+                <span className="font-medium text-neutral-800 dark:text-neutral-100">{query}</span>
               </p>
               {typeof retrievalMs === "number" && (
-                <span className="font-mono text-[11px] text-neutral-300">
+                <span className="font-mono text-[11px] text-neutral-300 dark:text-neutral-600">
                   ~{retrievalMs}ms
                 </span>
               )}
@@ -181,9 +187,16 @@ export default function Home() {
             {view === "results" && (
               <>
                 <SearchResults results={results} query={query} />
-                {/* AI answer layer — always BELOW primary sources (spec §49) */}
+                {/* AI answer layer — always BELOW primary sources (spec §49).
+                    key={query} forces a clean remount on every new search so
+                    the previous stream is fully torn down (no stale sources). */}
                 <div className="pt-2">
-                  <AgentAnswer query={query} sources={results} autoStart />
+                  <AgentAnswer
+                    key={query}
+                    query={query}
+                    sources={results}
+                    autoStart
+                  />
                 </div>
               </>
             )}
@@ -192,8 +205,8 @@ export default function Home() {
       </main>
 
       {/* Footer (sticky to bottom per UI rules) */}
-      <footer className="mt-auto border-t border-neutral-200 bg-white">
-        <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-2 px-4 py-4 text-xs text-neutral-400 sm:flex-row sm:px-6">
+      <footer className="mt-auto border-t border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950">
+        <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-2 px-4 py-4 text-xs text-neutral-400 dark:text-neutral-500 sm:flex-row sm:px-6">
           <div className="flex items-center gap-1.5">
             <Scale className="h-3 w-3" aria-hidden />
             <span>Տվյալների աղբյուր՝ </span>
@@ -201,7 +214,7 @@ export default function Home() {
               href="https://arlis.am"
               target="_blank"
               rel="noopener noreferrer"
-              className="font-medium text-neutral-600 hover:text-neutral-900 hover:underline"
+              className="font-medium text-neutral-600 hover:text-neutral-900 hover:underline dark:text-neutral-400 dark:hover:text-neutral-200"
             >
               ARLIS.am
             </a>
@@ -217,7 +230,7 @@ export default function Home() {
 
 function FooterLinks() {
   return (
-    <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-neutral-400">
+    <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-neutral-400 dark:text-neutral-500">
       <span>Աղբյուր՝ ARLIS.am</span>
       <span aria-hidden>·</span>
       <span>AI վերլուծություն՝ հղումներով</span>
