@@ -6,7 +6,9 @@ import { SearchResults } from "@/components/legal/SearchResults";
 import { AgentAnswer } from "@/components/legal/AgentAnswer";
 import { SearchingState, ErrorState, EmptyState, HomeHero } from "@/components/legal/States";
 import { ThemeToggle } from "@/components/legal/ThemeToggle";
-import type { LegalSource, SearchResponse } from "@/lib/legal/types";
+import { DateSensitivityBanner } from "@/components/legal/DateSensitivityBanner";
+import { SearchInsights } from "@/components/legal/SearchInsights";
+import type { LegalSource, LegalQuery, SearchResponse } from "@/lib/legal/types";
 import { Scale } from "lucide-react";
 
 type View = "home" | "searching" | "results" | "error" | "empty";
@@ -15,6 +17,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [view, setView] = useState<View>("home");
   const [results, setResults] = useState<LegalSource[]>([]);
+  const [parsedQuery, setParsedQuery] = useState<LegalQuery | undefined>();
   const [errorMsg, setErrorMsg] = useState<string | undefined>();
   const [retrievalMs, setRetrievalMs] = useState<number | undefined>();
   const searchNonce = useRef(0);
@@ -64,6 +67,7 @@ export default function Home() {
         const data = (await res.json()) as SearchResponse;
         if (nonce !== searchNonce.current) return;
         setRetrievalMs(data.retrieval?.durationMs);
+        setParsedQuery(data.parsed);
         if (!data.retrieval?.ok) {
           setErrorMsg(data.retrieval?.error);
           setView("error");
@@ -163,18 +167,22 @@ export default function Home() {
           </div>
         ) : (
           <div className="space-y-5">
-            {/* Query + result count line */}
+            {/* Query line */}
             <div className="flex items-baseline justify-between gap-2">
               <p className="text-sm text-neutral-500 dark:text-neutral-400">
                 <span className="text-neutral-400 dark:text-neutral-500">Հարցում՝</span>{" "}
                 <span className="font-medium text-neutral-800 dark:text-neutral-100">{query}</span>
               </p>
-              {typeof retrievalMs === "number" && (
-                <span className="font-mono text-[11px] text-neutral-300 dark:text-neutral-600">
-                  ~{retrievalMs}ms
-                </span>
-              )}
             </div>
+
+            {/* Search insights (parsed query structure + stats) */}
+            {view === "results" && (
+              <SearchInsights
+                parsed={parsedQuery}
+                resultCount={results.length}
+                retrievalMs={retrievalMs}
+              />
+            )}
 
             {view === "searching" && <SearchingState query={query} />}
 
@@ -186,6 +194,8 @@ export default function Home() {
 
             {view === "results" && (
               <>
+                {/* Date-sensitivity banner (spec §16) — above results */}
+                <DateSensitivityBanner parsed={parsedQuery} />
                 <SearchResults results={results} query={query} />
                 {/* AI answer layer — always BELOW primary sources (spec §49).
                     key={query} forces a clean remount on every new search so
@@ -196,6 +206,11 @@ export default function Home() {
                     query={query}
                     sources={results}
                     autoStart
+                    dateContext={parsedQuery ? {
+                      date: parsedQuery.date,
+                      wantsHistorical: parsedQuery.wantsHistoricalLaw,
+                      wantsCurrent: parsedQuery.wantsCurrentLaw,
+                    } : undefined}
                   />
                 </div>
               </>

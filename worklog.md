@@ -218,3 +218,67 @@ Stage Summary:
 - Copy/share buttons with robust clipboard fallbacks ✓
 - Next: potential future features (historical-version awareness §16, relevance gold-set test harness, query autocomplete from live ARLIS search API)
 
+
+---
+Task ID: 4-webdevreview
+Agent: main (cron-triggered webDevReview)
+Task: QA testing + bug fix (example chips regression) + new features (historical-version awareness §16, search insights panel, gold-set test harness §45) + styling polish.
+
+Work Log:
+
+**QA Findings:**
+- Bug (REGRESSION): Example chips on home page disappeared after autocomplete integration. Root cause: `showExamples` initialized to `false`, only set to `true` on focus, but `autoFocus=true` on home meant `focused=true` from start, so condition `showExamples && !focused` never succeeded.
+- Fix: Changed condition to `isHero && !value && !showDropdown` — examples show whenever the hero search box has no value and no autocomplete dropdown, regardless of focus state.
+- No other runtime bugs found.
+
+**New Features:**
+1. **Historical-version awareness** (spec §16):
+   - `DateSensitivityBanner` component: shows amber WARNING when user asks about a historical version ("նախկին խմբագրությամբ") or specific date ("2024 թվականին") — warns that ARLIS returns current version and historical applicability may differ. Shows emerald INFO note when user explicitly asks for current law ("գործող").
+   - Token-based date-sensitivity detection: fixed JS `\b` word boundary issue with Armenian Unicode — now uses `keywords.includes("գործող")` / `keywords.includes("նախկին")` for standalone word detection.
+   - API `/api/answer` accepts optional `dateContext: {date, wantsHistorical, wantsCurrent}` parameter. When present, injects a `⏰ ԺԱՄԱՆԱԿԱՅԻՆ ՈՒՇԱԴՐՈՒԹՅՈՒՆ` section into the LLM prompt instructing it to state temporal limitations.
+   - `AgentAnswer` passes `dateContext` from the parsed query to the API.
+   - Page passes `parsedQuery` date info to `AgentAnswer` and renders `DateSensitivityBanner` above results.
+
+2. **Search insights panel** (spec §31):
+   - `SearchInsights` component: compact panel showing parsed query structure — act title, article number, date, case number, question type (exact_article / legal_rule / case_law / definition / procedure), keywords, result count, retrieval time.
+   - Appears between the query line and the results, helping users understand how the system interpreted their query.
+   - Uses Armenian-localized labels and icons (Scale, Hash, Calendar, FileText, Lightbulb, Tag).
+
+3. **Relevance gold-set test harness** (spec §45, §46):
+   - `src/lib/legal/gold-set.ts`: 14 curated test queries across 7 categories (exact_code_article, natural_question, cassation, constitutional, law_title, abbreviation, no_result).
+   - `GET /api/test/gold-set`: developer-facing endpoint that runs all gold-set queries against the real ARLIS pipeline and returns Recall@4, Exact Article Recall@4, pass/fail per query, avg duration.
+   - **Results**: Total 14, Passed 11, Failed 3. Recall@4: 83.3%. Exact Article Recall@4: 100% ✓ (spec target ≥95%). Avg duration: 557ms (well under 1.5s target).
+   - The 3 failures are natural-language queries that ARLIS doesn't match well (body-text searches return no results) — this is an ARLIS limitation, not a retrieval bug.
+
+**Bug Fixes:**
+- Example chips regression: fixed display condition to `isHero && !value && !showDropdown`
+- Date-sensitivity detection: fixed Armenian word-boundary issue using token-based check instead of `\b` regex
+
+**Files Created/Modified:**
+- NEW: `src/components/legal/DateSensitivityBanner.tsx` — amber/emerald banner for date-sensitive queries
+- NEW: `src/components/legal/SearchInsights.tsx` — parsed query structure panel
+- NEW: `src/lib/legal/gold-set.ts` — 14 curated test queries + GoldTestResult/GoldSetSummary types
+- NEW: `src/app/api/test/gold-set/route.ts` — test harness endpoint
+- MODIFIED: `src/lib/legal/query-parser.ts` — token-based date-sensitivity detection (նախկին, հին, գործող, ընթացիկ, գործունակ)
+- MODIFIED: `src/app/api/answer/route.ts` — accepts `dateContext`, injects temporal warning into LLM prompt
+- MODIFIED: `src/components/legal/AgentAnswer.tsx` — accepts + passes `dateContext` prop
+- MODIFIED: `src/app/page.tsx` — renders DateSensitivityBanner + SearchInsights, passes parsedQuery + dateContext
+- MODIFIED: `src/components/legal/SearchBox.tsx` — fixed example chips display condition
+
+**E2E Verification (agent-browser + curl):**
+- Example chips: 4 chips visible on home page ✓
+- Search insights: shows act title, article, question type, keywords, result count, retrieval time ✓
+- Date-sensitivity banner: shows for "2024 թվականի ՔԴՕ 108 հոդված" with warning text mentioning the date ✓
+- Date detection: `wantsCurrentLaw=true` for "գործող քրեական...", `date=2024` for year queries ✓
+- Gold-set API: 14 tests run in 8s, 11 passed, Recall@4=83.3%, Exact Article Recall@4=100% ✓
+- Lint: clean ✓
+- No new console errors ✓
+
+Stage Summary:
+- 3 new features (historical-version awareness, search insights, gold-set test harness) ✓
+- 2 bug fixes (example chips regression, Armenian word-boundary detection) ✓
+- Gold-set metrics: Recall@4=83.3%, Exact Article Recall@4=100%, avg 557ms ✓
+- Core invariant maintained: 4 ARLIS results BEFORE AI answer ✓
+- Date-sensitivity context flows from query parser → API → AI prompt → user-visible banner ✓
+- Next: potential future features (live ARLIS autocomplete API, per-result article text preview, search result export)
+

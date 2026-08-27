@@ -17,8 +17,8 @@ const ARTICLE_REVERSE_RE = /(\d{1,4})\s*հոդված/u;
 const CASE_NUMBER_RE = /([Ա-Ֆա-ֆA-Za-z]+\/?\d{2,5}\/\d{2,4}(?:\.\d{1,2})?)/u;
 const DATE_RE = /(\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2,4})\s*(?:դրությամբ|թվականին)?/u;
 const YEAR_RE = /(\d{4})\s*թվական(?:ին|ի)?/u;
-const HISTORICAL_RE = /(նախկին\s+խմբագրությամբ|նախկին\s+տարբերակով|հին\s+խմբագրությամբ)/u;
-const CURRENT_RE = /(գործող\s+խմբագրությամբ|գործող\s+օրենսդրությամբ|ընթացիկ\s+խմբագրությամբ|գործունակ\s+տարբերակով)/u;
+const HISTORICAL_RE = /(նախկին\s+խմբագրությամբ|նախկին\s+տարբերակով|հին\s+խմբագրությամբ|նախկին\s+տեքստով|նախկին\s+խմբագրություն)/u;
+const CURRENT_RE = /(գործող\s+խմբագրությամբ|գործող\s+օրենսդրությամբ|ընթացիկ\s+խմբագրությամբ|գործունակ\s+տարբերակով|գործող\s+տարբերակով|գործող\s+օրենք|գործունակ\s+ակտ|ընթացիկ\s+տարբերակ)/u;
 const DEFINITION_RE = /(ինչ\s+է|ինչն\s+է|իմաստը|սահմանում\s+է|սահմանման\s+մասին)/u;
 const PROCEDURE_RE = /(կարգը|կարգավորությունը|դատավարության\s+կարգ|ընթացակարգը|պրոցեդուրա)/u;
 const CASE_LAW_RE = /(Վճռաբեկ\s+դատարան|վճռաբեկ\s+դատարան|դատական\s+նախադեպ|դատական\s+պրակտիկա|Սահմանադրական\s+դատարան|ՄԻԵՎԴ|Մարդու\s+իրավունքների\s+եվրոպական\s+դատարան)/u;
@@ -39,10 +39,14 @@ export function parseLegalQuery(raw: string): LegalQuery {
   if (!normalized) return result;
 
   // ---- Date sensitivity
+  // Use regex for multi-word phrases, and token-based check for standalone words
+  // (JS \b doesn't work with Armenian Unicode, so we check the keyword set).
   const histM = normalized.match(HISTORICAL_RE);
   const currM = normalized.match(CURRENT_RE);
-  result.wantsHistoricalLaw = !!histM;
-  result.wantsCurrentLaw = !!currM;
+  const hasHistoricalToken = result.keywords.includes("նախկին") || result.keywords.includes("հին");
+  const hasCurrentToken = result.keywords.includes("գործող") || result.keywords.includes("ընթացիկ") || result.keywords.includes("գործունակ");
+  result.wantsHistoricalLaw = !!histM || hasHistoricalToken;
+  result.wantsCurrentLaw = !!currM || hasCurrentToken;
 
   const dateM = normalized.match(DATE_RE);
   if (dateM) result.date = dateM[1];

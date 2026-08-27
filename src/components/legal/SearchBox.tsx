@@ -36,7 +36,7 @@ export function SearchBox({
 }: SearchBoxProps) {
   const [value, setValue] = useState(initialQuery);
   const [focused, setFocused] = useState(false);
-  const [showExamples, setShowExamples] = useState(false);
+  const [showExamples, setShowExamples] = useState(true);
   const [activeIdx, setActiveIdx] = useState(-1);
   const inputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -279,16 +279,16 @@ export function SearchBox({
         </div>
       )}
 
-      {isHero && showExamples && !focused && (
-        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-          <span className="text-xs text-neutral-500 dark:text-neutral-400">Օրինակներ՝</span>
+      {isHero && !value && !showDropdown && (
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          <span className="text-xs font-medium text-neutral-500 dark:text-neutral-400">Օրինակներ՝</span>
           {EXAMPLES.slice(0, 4).map((ex) => (
             <button
               key={ex}
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => handleExample(ex)}
-              className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs text-neutral-700 hover:border-neutral-400 hover:bg-neutral-50 hover:text-neutral-900 transition-colors dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-800 dark:hover:text-neutral-100"
+              className="rounded-full border border-neutral-300 bg-white px-3 py-1 text-xs text-neutral-700 transition-all hover:border-neutral-900 hover:bg-neutral-900 hover:text-white dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:hover:border-white dark:hover:bg-white dark:hover:text-neutral-900"
             >
               {ex}
             </button>

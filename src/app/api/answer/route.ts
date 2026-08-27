@@ -55,6 +55,7 @@ function buildUserPrompt(
   query: string,
   sources: LegalSource[],
   isFollowUp = false,
+  dateContext?: { date?: string; wantsHistorical?: boolean; wantsCurrent?: boolean },
 ): string {
   const srcBlocks = sources
     .map((s) => {
@@ -82,6 +83,19 @@ ${body}
     ? `ՀՍՏԱԿԵՑՆՈՂ ՀԱՐԳՒԸ (հետևում է նախորդ զրույցին)՝`
     : `ՕԳՏԱՏԻՐՈՋ ՀԱՐԳՒԸ՝`;
 
+  // Date-sensitivity warning (spec §16): if the user asked about a historical
+  // version or a specific date, tell the AI to state temporal limitations.
+  let dateWarning = "";
+  if (dateContext) {
+    if (dateContext.wantsHistorical) {
+      dateWarning = `\n\n⏰ ԺԱՄԱՆԱԿԱՅԻՆ ՈՒՇԱԴՐՈՒԹՅՈՒՆ՝ Օգտատերը հարցրել է ՆԱԽԿԻՆ խմբագրությամբ տարբերակը։ Տրամադրված աղբյուրները ARLIS-ի ԸՆԹԱՑԻԿ (գործող) տարբերակն են։ Քո պատասխանի մեջ ՀՍՏԱԿ ՆՇԻՐ, որ տրամադրված տեքստը ընթացիկ տարբերակն է, և որ նախկին խմբագրությամբ տարբերակը կարող է տարբերվել։ Խորհուրդ արա ստուգել ակտի փոփոխման պատմությունը ARLIS-ում։`;
+    } else if (dateContext.date && !dateContext.wantsCurrent) {
+      dateWarning = `\n\n⏰ ԺԱՄԱՆԱԿԱՅԻՆ ՈՒՇԱԴՐՈՒԹՅՈՒՆ՝ Օգտատերը նշել է ամսաթիվ (${dateContext.date})։ Տրամադրված աղբյուրները ARLIS-ի ԸՆԹԱՑԻԿ տարբերակն են և կարող են չհամապատասխանել ${dateContext.date} ամսաթվի դրությամբ կիրառելի տարբերակին։ Քո պատասխանի մեջ ՆՇԻՐ այս սահմանափակումը։`;
+    } else if (dateContext.wantsCurrent) {
+      dateWarning = `\n\n✓ Օգտատերը հարցրել է ԳՈՐԾՈՂ խմբագրությամբ։ Տրամադրված աղբյուրները ընթացիկ գործող տարբերակն են։`;
+    }
+  }
+
   const footer = isFollowUp
     ? `Սա հետևող հարց է։ Պատասխանիր համառոտ՝ հղումով նույն աղբյուրներին։ Կարող ես մեջբերել միայն [S1], [S2], [S3], [S4] նշումները։`
     : `Հիշիր՝ կարող ես մեջբերել միայն [S1], [S2], [S3], [S4] նշումները։ Մի հորինիր նոր աղբյուրային նշումներ։ Եթե տրամադրված աղբյուրները բավարար չեն վստահ պատասխանի համար, հստակ գրիր այդ մասին։\n\nՏրամադրիր պատասխանը նշված կառուցվածքով։`;
@@ -92,6 +106,7 @@ ${query}
 ՏՐԱՄԱԴՐՎԱԾ ԱՂԲՅՈՒՐՆԵՐԸ (քեզ հասանելի միակ աղբյուրներն են)՝
 
 ${srcBlocks}
+${dateWarning}
 
 ${footer}`;
 }
@@ -150,7 +165,7 @@ function buildCitations(
 
 export async function POST(req: NextRequest) {
   const requestId = randomUUID();
-  let body: { query?: unknown; sources?: unknown; history?: unknown };
+  let body: { query?: unknown; sources?: unknown; history?: unknown; dateContext?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -209,6 +224,18 @@ export async function POST(req: NextRequest) {
     if (history.length >= 6) break;
   }
 
+  // Optional date-sensitivity context (spec §16): tells the AI whether the
+  // user is asking about a historical version or a specific date, so it can
+  // state limitations about temporal applicability.
+  const dateContext =
+    body.dateContext && typeof body.dateContext === "object"
+      ? (body.dateContext as {
+          date?: string;
+          wantsHistorical?: boolean;
+          wantsCurrent?: boolean;
+        })
+      : undefined;
+
   // ---- Set up SSE stream
   const encoder = new TextEncoder();
   let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -236,7 +263,7 @@ export async function POST(req: NextRequest) {
 
       try {
         const zai = await ZAI.create();
-        const userPrompt = buildUserPrompt(query, safeSources, history.length > 0);
+        const userPrompt = buildUserPrompt(query, safeSources, history.length > 0, dateContext);
 
         // Build the message sequence. For follow-up questions we include the
         // conversation history so the model has context, then the new user

@@ -25,6 +25,8 @@ type AgentAnswerProps = {
   sources: LegalSource[];
   /** When true, component starts streaming immediately on mount. */
   autoStart?: boolean;
+  /** Optional date-sensitivity context (spec §16) passed to the AI */
+  dateContext?: { date?: string; wantsHistorical?: boolean; wantsCurrent?: boolean };
 };
 
 type StreamState = "idle" | "thinking" | "streaming" | "done" | "error";
@@ -34,7 +36,7 @@ type Turn = {
   content: string;
 };
 
-export function AgentAnswer({ query, sources, autoStart = true }: AgentAnswerProps) {
+export function AgentAnswer({ query, sources, autoStart = true, dateContext }: AgentAnswerProps) {
   const [text, setText] = useState("");
   const [state, setState] = useState<StreamState>("idle");
   const [citations, setCitations] = useState<CitationRef[]>([]);
@@ -79,6 +81,7 @@ export function AgentAnswer({ query, sources, autoStart = true }: AgentAnswerPro
             query: actualQuery,
             sources,
             history: history ?? (followUpQuery ? turns : undefined),
+            dateContext: followUpQuery ? undefined : dateContext,
           }),
           signal: ctrl.signal,
         });
