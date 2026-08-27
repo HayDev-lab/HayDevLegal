@@ -206,20 +206,20 @@ export default function Home() {
 
       {/* Footer (sticky to bottom per UI rules) */}
       <footer className="mt-auto border-t border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950">
-        <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-2 px-4 py-4 text-xs text-neutral-400 dark:text-neutral-500 sm:flex-row sm:px-6">
+        <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-2 px-4 py-6 text-xs text-neutral-500 dark:text-neutral-400 sm:flex-row sm:px-6 sm:py-5">
           <div className="flex items-center gap-1.5">
-            <Scale className="h-3 w-3" aria-hidden />
+            <Scale className="h-3.5 w-3.5 text-neutral-400 dark:text-neutral-500" aria-hidden />
             <span>Տվյալների աղբյուր՝ </span>
             <a
               href="https://arlis.am"
               target="_blank"
               rel="noopener noreferrer"
-              className="font-medium text-neutral-600 hover:text-neutral-900 hover:underline dark:text-neutral-400 dark:hover:text-neutral-200"
+              className="font-medium text-neutral-700 hover:text-neutral-900 hover:underline dark:text-neutral-300 dark:hover:text-neutral-100"
             >
               ARLIS.am
             </a>
           </div>
-          <p className="text-center sm:text-right">
+          <p className="text-center text-neutral-500 dark:text-neutral-400 sm:text-right">
             Սույն կայքը հանդիսանում է որոնողական գործիք և չի փոխարինում իրավական խորհրդատվությանը։
           </p>
         </div>

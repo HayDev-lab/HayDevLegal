@@ -156,3 +156,65 @@ Stage Summary:
 - Dark mode persists across navigation ✓
 - Next: potential future features (historical-version awareness §16, query autocomplete, relevance gold-set test harness)
 
+
+---
+Task ID: 3-webdevreview
+Agent: main (cron-triggered webDevReview)
+Task: QA testing + new features (query autocomplete, recent searches, per-result deep-links, copy/share buttons) + styling polish (home hero redesign, contrast improvements, footer padding).
+
+Work Log:
+
+**QA Findings (via agent-browser + vision model):**
+- No runtime bugs found — all previous fixes (rapid re-search, auto-start, max_tokens) remain stable
+- Empty query → home page ✓; very long query (640 chars) → "չափազանց երկար" error ✓
+- XSS attempt (`<script>alert(1)`) → blocked, no script injection ✓
+- Mobile responsive → no horizontal scroll ✓
+- Vision model review identified contrast/polish opportunities (home hero, CTA button, footer padding)
+- Copy/share buttons initially didn't show success state in headless browser (clipboard API hangs) → fixed with Promise.race timeout + always-show feedback
+
+**New Features:**
+1. **Query autocomplete** (spec suggestion c): Curated dictionary of 120+ Armenian legal terms across 6 categories (օրենսգիրք, օրենք, դատական, հասկացություն, ընթացակարգ, կազմակերպություն). Smart matching: exact abbreviation → starts-with → word-boundary → loose contains. Dropdown shows term + expansion hint + category icon + category label. Highlighted matches in the dropdown. Keyboard navigation (↑↓ to navigate, Tab to fill, Enter to select, Esc to close).
+2. **Recent searches** (localStorage): Last 8 searches persisted in `arlis-recent-searches`. Shown in autocomplete dropdown when search box is focused with empty query. Each entry has remove (×) button. "Մաքրել" (Clear) button to clear all. Uses lazy initializer (no setState-in-effect).
+3. **Per-result deep-links** (spec suggestion g): Each result card now has an action row with "Բացել ակտը" (Open act) button linking to the full ARLIS act page, plus a "Հոդված {N}" button with `#article-{N}` anchor deep-link when an article is detected.
+4. **Copy answer button**: Copies the AI answer text to clipboard. Shows checkmark (✓) for 2s after copy. Clipboard API with execCommand fallback + text-selection fallback + Promise.race timeout (never hangs).
+5. **Share query link button**: Copies the shareable `?q=` URL to clipboard. Shows checkmark for 2s.
+
+**Styling Polish:**
+- Home hero redesign: larger 5xl bold heading with gradient text on "իրավական", badge with shadow-sm, 3 feature pills with icons (Scale, Sparkles, FileText), improved contrast (text-neutral-600/300 instead of 500/400)
+- Search box: stronger border (neutral-300 instead of 200), 4px ring on focus (ring-neutral-100), more prominent CTA button (shadow-sm, px-6), darker placeholder text (neutral-500)
+- Footer: increased padding (py-6/py-5), better contrast (text-neutral-500/400, links neutral-700/300), larger icon
+- Autocomplete dropdown: clean white/dark card with shadow-xl, category-colored icons, highlighted match text, footer hint with keyboard shortcuts (↑↓ Esc)
+- Result card action row: border-t separator, "Բացել ակտը" + "Հոդված {N}" buttons with BookOpen/ChevronRight icons, ARLIS act ID badge
+
+**Files Created/Modified:**
+- NEW: `src/lib/legal/legal-terms.ts` — 120+ curated Armenian legal terms + suggestTerms() + CATEGORY_META
+- NEW: `src/components/legal/useRecentSearches.ts` — localStorage hook (lazy initializer, add/remove/clear)
+- NEW: `src/components/legal/Autocomplete.tsx` — dropdown with suggestions + recent searches + keyboard nav + highlight
+- MODIFIED: `src/components/legal/SearchBox.tsx` — integrated autocomplete, keyboard nav, recent searches, click-outside close, stronger styling
+- MODIFIED: `src/components/legal/SearchResults.tsx` — added action row with deep-links (Բացել ակտը + Հոդված anchor)
+- MODIFIED: `src/components/legal/AgentAnswer.tsx` — added copy/share buttons with clipboard fallbacks + timeout race
+- MODIFIED: `src/components/legal/States.tsx` — redesigned HomeHero (gradient text, 3 feature pills, better contrast)
+- MODIFIED: `src/app/page.tsx` — improved footer padding + contrast
+
+**E2E Verification (agent-browser):**
+- Autocomplete: typing "քդօ" → 4 suggestions, first = Criminal Procedure Code with expansion hint ✓
+- Keyboard nav: ↑↓ navigates, aria-selected updates, Enter selects and searches ✓
+- Recent searches: appear when search focused + empty, show previous queries with remove/clear buttons ✓
+- Copy button: click → aria-label changes to "Պատճենվեց", checkmark icon appears ✓
+- Share button: click → aria-label changes to "Հղումը պատճենվեց", checkmark appears ✓
+- Deep-links: "Բացել ակտը" → ARLIS act URL; "Հոդված 108" → URL with #article-108 anchor ✓
+- Home hero: gradient text, 3 feature pills, improved contrast ✓
+- Mobile: no horizontal scroll ✓
+- Lint: clean (0 errors, 0 warnings) ✓
+- No new console errors ✓
+
+Stage Summary:
+- 5 new features implemented and verified ✓
+- 4 styling improvements (hero, search box, footer, autocomplete) ✓
+- Core invariant maintained: 4 ARLIS results BEFORE AI answer ✓
+- Autocomplete with 120+ legal terms + keyboard navigation ✓
+- Recent searches in localStorage with lazy initializer ✓
+- Per-result deep-links with article anchors ✓
+- Copy/share buttons with robust clipboard fallbacks ✓
+- Next: potential future features (historical-version awareness §16, relevance gold-set test harness, query autocomplete from live ARLIS search API)
+

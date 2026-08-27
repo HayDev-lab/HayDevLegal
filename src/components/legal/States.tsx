@@ -1,6 +1,6 @@
 "use client";
 
-import { Search, AlertTriangle, FileQuestion, Loader2, Scale } from "lucide-react";
+import { Search, AlertTriangle, FileQuestion, Loader2, Scale, Sparkles, FileText } from "lucide-react";
 
 export function SearchingState({ query }: { query: string }) {
   return (
@@ -91,24 +91,36 @@ export function EmptyState({ query }: { query: string }) {
 export function HomeHero() {
   return (
     <div className="flex flex-col items-center text-center">
-      <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs text-neutral-500 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400">
-        <Search className="h-3 w-3" aria-hidden />
+      <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-neutral-300 bg-white px-3.5 py-1.5 text-xs font-medium text-neutral-600 shadow-sm dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300">
+        <Search className="h-3 w-3 text-neutral-500 dark:text-neutral-400" aria-hidden />
         ARLIS · Հայաստանի իրավական տեղեկատվության համակարգ
       </div>
-      <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-50">
-        Հայկական <span className="text-neutral-400 dark:text-neutral-600">իրավական</span> որոնում
+      <h1 className="text-4xl sm:text-5xl font-bold tracking-tight text-neutral-900 dark:text-neutral-50">
+        Հայկական{" "}
+        <span className="bg-gradient-to-r from-neutral-500 to-neutral-700 bg-clip-text text-transparent dark:from-neutral-400 dark:to-neutral-300">
+          իրավական
+        </span>{" "}
+        որոնում
       </h1>
-      <p className="mt-2 max-w-xl text-sm text-neutral-500 dark:text-neutral-400">
+      <p className="mt-3 max-w-xl text-sm text-neutral-600 dark:text-neutral-300 sm:text-base">
         Գտեք օրենսդրություն, դատական նախադեպեր և սահմանադրական դատարանի որոշումներ
         ARLIS-ում՝ ստացեք AI վերլուծություն՝ հղումներով դեպի սկզբնաղբյուր։
       </p>
-      <div className="mt-3 flex items-center gap-4 text-[11px] text-neutral-400 dark:text-neutral-500">
-        <span className="inline-flex items-center gap-1">
-          <Scale className="h-3 w-3" aria-hidden />
+      <div className="mt-4 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+        <span className="inline-flex items-center gap-1.5">
+          <Scale className="h-3.5 w-3.5" aria-hidden />
           Իրական ARLIS աղբյուրներ
         </span>
-        <span className="hidden sm:inline">·</span>
-        <span className="hidden sm:inline">AI վերլուծություն հղումներով</span>
+        <span className="hidden sm:inline text-neutral-300 dark:text-neutral-600">·</span>
+        <span className="inline-flex items-center gap-1.5">
+          <Sparkles className="h-3.5 w-3.5" aria-hidden />
+          AI վերլուծություն հղումներով
+        </span>
+        <span className="hidden sm:inline text-neutral-300 dark:text-neutral-600">·</span>
+        <span className="inline-flex items-center gap-1.5">
+          <FileText className="h-3.5 w-3.5" aria-hidden />
+          Հայերեն իրավական տերմիններ
+        </span>
       </div>
     </div>
   );

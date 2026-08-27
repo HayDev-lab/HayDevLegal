@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { ExternalLink, FileText, Scale, Gavel, Landmark, Globe, ChevronRight, Filter } from "lucide-react";
+import { ExternalLink, FileText, Scale, Gavel, Landmark, Globe, ChevronRight, Filter, BookOpen } from "lucide-react";
 import type { LegalSource, SourceLabel } from "@/lib/legal/types";
 import { cn } from "@/lib/utils";
 
@@ -190,6 +190,37 @@ function ResultCard({ source, index }: { source: LegalSource; index: number }) {
               {source.relevanceScore > 0 && (
                 <span>Համապատասխանություն՝ <span className="text-neutral-600 dark:text-neutral-300">{Math.round(source.relevanceScore * 100)}%</span></span>
               )}
+            </div>
+          )}
+
+          {/* Action row: deep-link to full act + article anchor (spec §4, suggestion g) */}
+          {url && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-neutral-100 pt-2 dark:border-neutral-800">
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2.5 py-1 text-xs font-medium text-neutral-700 transition-colors hover:border-neutral-300 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
+              >
+                <BookOpen className="h-3 w-3" aria-hidden />
+                Բացել ակտը
+                <ExternalLink className="h-2.5 w-2.5 opacity-50" aria-hidden />
+              </a>
+              {source.article && url && (
+                <a
+                  href={`${url}#article-${source.article}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2.5 py-1 text-xs font-medium text-neutral-700 transition-colors hover:border-neutral-300 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
+                  title={`Հոդված ${source.article} — բացել ARLIS-ում`}
+                >
+                  <ChevronRight className="h-3 w-3" aria-hidden />
+                  Հոդված {source.article}
+                </a>
+              )}
+              <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-neutral-300 dark:text-neutral-600">
+                ARLIS · {source.actId ?? "—"}
+              </span>
             </div>
           )}
         </div>

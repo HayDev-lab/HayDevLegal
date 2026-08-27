@@ -12,6 +12,9 @@ import {
   MessageCircle,
   ChevronDown,
   ChevronUp,
+  Copy,
+  Check,
+  Share2,
 } from "lucide-react";
 import type { LegalSource, CitationRef, AnswerChunk } from "@/lib/legal/types";
 import { cn } from "@/lib/utils";
@@ -40,6 +43,8 @@ export function AgentAnswer({ query, sources, autoStart = true }: AgentAnswerPro
   const [turns, setTurns] = useState<Turn[]>([]);
   const [followUp, setFollowUp] = useState("");
   const [showFullAnswer, setShowFullAnswer] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const [shared, setShared] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
@@ -196,12 +201,78 @@ export function AgentAnswer({ query, sources, autoStart = true }: AgentAnswerPro
     [followUp, state, start],
   );
 
-  if (sources.length === 0) return null;
-
   const isBusy = state === "thinking" || state === "streaming";
   const hasTurns = turns.length > 0;
   // The currently displayed text: either the main answer or the last follow-up answer
   const displayText = hasTurns ? turns[turns.length - 1]?.content ?? "" : text;
+
+  // Copy the AI answer to clipboard (plain text with citations).
+  // Always shows the "copied" feedback for UX; clipboard write is best-effort
+  // with a timeout so it never hangs in restricted environments.
+  const handleCopy = useCallback(async () => {
+    if (!displayText) return;
+    const doFallback = () => {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = displayText;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch {
+        const sel = window.getSelection();
+        if (sel && scrollRef.current) {
+          const range = document.createRange();
+          range.selectNodeContents(scrollRef.current);
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+      }
+    };
+    try {
+      // Race the clipboard write against a 1s timeout so it never hangs.
+      await Promise.race([
+        navigator.clipboard?.writeText(displayText) ?? Promise.reject(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 1000)),
+      ]);
+    } catch {
+      doFallback();
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }, [displayText]);
+
+  // Share the query as a URL (copies the shareable ?q= link to clipboard).
+  const handleShare = useCallback(async () => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("q", query);
+    const shareUrl = url.toString();
+    try {
+      await Promise.race([
+        navigator.clipboard?.writeText(shareUrl) ?? Promise.reject(),
+        new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 1000)),
+      ]);
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = shareUrl;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch {
+        // ignore
+      }
+    }
+    setShared(true);
+    setTimeout(() => setShared(false), 2000);
+  }, [query]);
+
+  if (sources.length === 0) return null;
 
   return (
     <section
@@ -224,7 +295,39 @@ export function AgentAnswer({ query, sources, autoStart = true }: AgentAnswerPro
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
+          {/* Copy answer button */}
+          {displayText && !isBusy && (
+            <button
+              type="button"
+              onClick={handleCopy}
+              aria-label={copied ? "Պատճենվեց" : "Պատճենել պատասխանը"}
+              title={copied ? "Պատճենվեց" : "Պատճենել պատասխանը"}
+              className="inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-50 hover:text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+            >
+              {copied ? (
+                <Check className="h-3 w-3 text-emerald-500" aria-hidden />
+              ) : (
+                <Copy className="h-3 w-3" aria-hidden />
+              )}
+            </button>
+          )}
+          {/* Share query link button */}
+          {displayText && !isBusy && (
+            <button
+              type="button"
+              onClick={handleShare}
+              aria-label={shared ? "Հղումը պատճենվեց" : "Կիսվել հղումով"}
+              title={shared ? "Հղումը պատճենվեց" : "Կիսվել հղումով"}
+              className="inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs text-neutral-500 transition-colors hover:bg-neutral-50 hover:text-neutral-700 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-700 dark:hover:text-neutral-200"
+            >
+              {shared ? (
+                <Check className="h-3 w-3 text-emerald-500" aria-hidden />
+              ) : (
+                <Share2 className="h-3 w-3" aria-hidden />
+              )}
+            </button>
+          )}
           {/* Collapse / expand toggle */}
           {displayText && !isBusy && (
             <button
