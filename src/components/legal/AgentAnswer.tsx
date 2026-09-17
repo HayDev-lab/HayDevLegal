@@ -27,6 +27,8 @@ type AgentAnswerProps = {
   autoStart?: boolean;
   /** Optional date-sensitivity context (spec §16) passed to the AI */
   dateContext?: { date?: string; wantsHistorical?: boolean; wantsCurrent?: boolean };
+  /** Search warnings (temporal / restricted) reflected in the AI prompt. */
+  warnings?: string[];
 };
 
 type StreamState = "idle" | "thinking" | "streaming" | "done" | "error";
@@ -36,7 +38,7 @@ type Turn = {
   content: string;
 };
 
-export function AgentAnswer({ query, sources, autoStart = true, dateContext }: AgentAnswerProps) {
+export function AgentAnswer({ query, sources, autoStart = true, dateContext, warnings }: AgentAnswerProps) {
   const [text, setText] = useState("");
   const [state, setState] = useState<StreamState>("idle");
   const [citations, setCitations] = useState<CitationRef[]>([]);
@@ -79,9 +81,10 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext }: A
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             query: actualQuery,
-            sources,
+            evidence: sources,
             history: history ?? (followUpQuery ? turns : undefined),
             dateContext: followUpQuery ? undefined : dateContext,
+            warnings: followUpQuery ? undefined : warnings,
           }),
           signal: ctrl.signal,
         });
@@ -131,6 +134,21 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext }: A
               } else {
                 setText(accumulated);
               }
+            } else if (chunk.type === "replace") {
+              // Hallucination firewall final pass: re-render the cleaned text.
+              accumulated = chunk.text;
+              if (followUpQuery) {
+                setTurns((prev) => {
+                  const next = [...prev];
+                  const lastIdx = next.length - 1;
+                  if (lastIdx >= 0 && next[lastIdx].role === "assistant") {
+                    next[lastIdx] = { ...next[lastIdx], content: accumulated };
+                  }
+                  return next;
+                });
+              } else {
+                setText(accumulated);
+              }
             } else if (chunk.type === "done") {
               setCitations(chunk.citations);
               setRequestId(chunk.requestId);
@@ -153,7 +171,7 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext }: A
         setState("error");
       }
     },
-    [query, sources, turns],
+    [query, sources, turns, warnings],
   );
 
   const cancel = useCallback(() => {
@@ -294,7 +312,7 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext }: A
               AI Վերլուծություն
             </h2>
             <p className="text-[11px] text-neutral-400 dark:text-neutral-500">
-              Հիմնված {sources.length} աղբյուրի վրա · հղումներով դեպի ARLIS
+              Հիմնված {sources.length} ապացույցի վրա · հղումներ դեպի սկզբնաղբյուրներ
             </p>
           </div>
         </div>
@@ -494,7 +512,7 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext }: A
                   <span className="flex h-4 w-4 items-center justify-center rounded bg-neutral-900 text-[10px] font-bold text-white dark:bg-white dark:text-neutral-900">
                     {c.id}
                   </span>
-                  <span className="max-w-[18rem] truncate group-hover:text-neutral-900 dark:group-hover:text-white">
+                  <span className="max-w-[11rem] truncate sm:max-w-[18rem] group-hover:text-neutral-900 dark:group-hover:text-white">
                     {c.title}
                   </span>
                   <span className="text-neutral-400 group-hover:text-neutral-600 dark:group-hover:text-neutral-300">↗</span>

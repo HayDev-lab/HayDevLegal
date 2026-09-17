@@ -8,7 +8,17 @@ import { SearchingState, ErrorState, EmptyState, HomeHero } from "@/components/l
 import { ThemeToggle } from "@/components/legal/ThemeToggle";
 import { DateSensitivityBanner } from "@/components/legal/DateSensitivityBanner";
 import { SearchInsights } from "@/components/legal/SearchInsights";
-import type { LegalSource, LegalQuery, SearchResponse } from "@/lib/legal/types";
+import { SearchTracePanel } from "@/components/legal/SearchTracePanel";
+import { SearchWarnings } from "@/components/legal/SearchWarnings";
+import { SearchModeToggle } from "@/components/legal/SearchModeToggle";
+import { SourceConfirmDialog } from "@/components/legal/SourceConfirmDialog";
+import type { LegalSource, LegalQuery } from "@/lib/legal/types";
+import type {
+  FederatedSearchResponse,
+  SearchMode,
+  SearchTrace,
+  SearchWarning,
+} from "@/lib/legal-search/types";
 import { Scale } from "lucide-react";
 
 type View = "home" | "searching" | "results" | "error" | "empty";
@@ -16,59 +26,73 @@ type View = "home" | "searching" | "results" | "error" | "empty";
 export default function Home() {
   const [query, setQuery] = useState("");
   const [view, setView] = useState<View>("home");
+  const [mode, setMode] = useState<SearchMode>("quick");
   const [results, setResults] = useState<LegalSource[]>([]);
   const [parsedQuery, setParsedQuery] = useState<LegalQuery | undefined>();
+  const [trace, setTrace] = useState<SearchTrace | undefined>();
+  const [warnings, setWarnings] = useState<SearchWarning[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | undefined>();
   const [retrievalMs, setRetrievalMs] = useState<number | undefined>();
+  const [confirmTarget, setConfirmTarget] = useState<LegalSource | null>(null);
   const searchNonce = useRef(0);
 
-  // Hydrate from URL ?q= on first load.
+  // Hydrate from URL ?q= & mode= on first load.
   useEffect(() => {
     const url = new URL(window.location.href);
     const q = url.searchParams.get("q");
+    const m = url.searchParams.get("mode") === "deep" ? "deep" : "quick";
     if (q && q.trim()) {
+      setMode(m);
       setQuery(q);
-      void runSearch(q);
+      void runSearch(q, m);
     }
   }, []);
 
   // Keep URL in sync with query (shareable / refreshable).
-  const updateUrl = useCallback((q: string) => {
+  const updateUrl = useCallback((q: string, m: SearchMode) => {
     const url = new URL(window.location.href);
     if (q.trim()) {
       url.searchParams.set("q", q.trim());
+      if (m === "deep") url.searchParams.set("mode", "deep");
+      else url.searchParams.delete("mode");
     } else {
       url.searchParams.delete("q");
+      url.searchParams.delete("mode");
     }
     window.history.replaceState({}, "", url.toString());
   }, []);
 
   const runSearch = useCallback(
-    async (q: string) => {
+    async (q: string, m: SearchMode) => {
       const nonce = ++searchNonce.current;
       setQuery(q);
+      setMode(m);
       setView("searching");
       setResults([]);
+      setTrace(undefined);
+      setWarnings([]);
       setErrorMsg(undefined);
       setRetrievalMs(undefined);
-      updateUrl(q);
+      updateUrl(q, m);
 
       try {
         const res = await fetch("/api/search", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ query: q }),
+          body: JSON.stringify({ query: q, mode: m }),
         });
         if (nonce !== searchNonce.current) return; // superseded
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err?.error || `HTTP ${res.status}`);
         }
-        const data = (await res.json()) as SearchResponse;
+        const data = (await res.json()) as FederatedSearchResponse;
         if (nonce !== searchNonce.current) return;
         setRetrievalMs(data.retrieval?.durationMs);
         setParsedQuery(data.parsed);
-        if (!data.retrieval?.ok) {
+        setTrace(data.trace);
+        setWarnings(data.warnings ?? []);
+        if (!data.retrieval?.ok && data.evidence?.length === 0) {
           setErrorMsg(data.retrieval?.error);
           setView("error");
           return;
@@ -79,7 +103,7 @@ export default function Home() {
         if (nonce !== searchNonce.current) return;
         console.error("[search] failed:", err);
         setErrorMsg(
-          err instanceof Error ? err.message : "ARLIS-ի որոնումը ժամանակավորապես անհասանելի է։",
+          err instanceof Error ? err.message : "Որոնումը ժամանակավորապես անհասանելի է։",
         );
         setView("error");
       }
@@ -89,9 +113,18 @@ export default function Home() {
 
   const onSearchBoxSubmit = useCallback(
     (q: string) => {
-      void runSearch(q);
+      void runSearch(q, mode);
     },
-    [runSearch],
+    [runSearch, mode],
+  );
+
+  const onModeChange = useCallback(
+    (m: SearchMode) => {
+      setMode(m);
+      // Re-run the current search when the mode changes on a results page.
+      if (query.trim()) void runSearch(query, m);
+    },
+    [query, runSearch],
   );
 
   const resetHome = useCallback(() => {
@@ -100,10 +133,42 @@ export default function Home() {
     setResults([]);
     setView("home");
     setErrorMsg(undefined);
-    updateUrl("");
-  }, [updateUrl]);
+    setConfirmTarget(null);
+    updateUrl("", mode);
+  }, [updateUrl, mode]);
+
+  // Phase 3 §64 — when the user confirms the source (solves the CAPTCHA in
+  // our dialog), upgrade that evidence card in place: metadata -> verified
+  // full text with real passages.
+  const onEvidenceResolved = useCallback(
+    (passages: string[], _url: string, textPreview: string) => {
+      setConfirmTarget((prev) => {
+        if (!prev) return null;
+        const ref = prev.documentRef;
+        setResults((rs) =>
+          rs.map((r) =>
+            r.documentRef && r.documentRef === ref
+              ? {
+                  ...r,
+                  accessState: undefined,
+                  fullTextVerified: true,
+                  evidenceGrade: "PRIMARY_VERIFIED" as const,
+                  excerpt: (passages[0] ?? textPreview).slice(0, 400),
+                  fullRetrievedText: (passages[0] ?? textPreview).slice(0, 1200),
+                }
+              : r,
+          ),
+        );
+        return null; // close the dialog
+      });
+    },
+    [],
+  );
 
   const isHome = view === "home";
+  const modeToggle = (
+    <SearchModeToggle mode={mode} onChange={onModeChange} disabled={view === "searching"} />
+  );
 
   return (
     <div className="flex min-h-screen flex-col bg-neutral-50 dark:bg-neutral-950">
@@ -126,7 +191,7 @@ export default function Home() {
 
           {/* Compact search bar (results view) */}
           {!isHome && (
-            <div className="ml-auto w-full max-w-2xl">
+            <div className="ml-auto min-w-0 w-full max-w-2xl">
               <SearchBox
                 initialQuery={query}
                 onSubmit={onSearchBoxSubmit}
@@ -163,16 +228,18 @@ export default function Home() {
                 autoFocus
               />
             </div>
+            {modeToggle}
             <FooterLinks />
           </div>
         ) : (
           <div className="space-y-5">
-            {/* Query line */}
-            <div className="flex items-baseline justify-between gap-2">
+            {/* Query line + mode toggle */}
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
               <p className="text-sm text-neutral-500 dark:text-neutral-400">
                 <span className="text-neutral-400 dark:text-neutral-500">Հարցում՝</span>{" "}
                 <span className="font-medium text-neutral-800 dark:text-neutral-100">{query}</span>
               </p>
+              {modeToggle}
             </div>
 
             {/* Search insights (parsed query structure + stats) */}
@@ -184,28 +251,39 @@ export default function Home() {
               />
             )}
 
+            {/* Search trace — retrieval activity (§25) */}
+            {view === "results" && trace && <SearchTracePanel trace={trace} />}
+
             {view === "searching" && <SearchingState query={query} />}
 
             {view === "error" && (
-              <ErrorState message={errorMsg} onRetry={() => runSearch(query)} />
+              <ErrorState message={errorMsg} onRetry={() => runSearch(query, mode)} />
             )}
 
             {view === "empty" && <EmptyState query={query} />}
 
             {view === "results" && (
               <>
+                {/* Search warnings (temporal / restricted / partial) */}
+                <SearchWarnings warnings={warnings} />
+
                 {/* Date-sensitivity banner (spec §16) — above results */}
                 <DateSensitivityBanner parsed={parsedQuery} />
-                <SearchResults results={results} query={query} />
+                <SearchResults
+                  results={results}
+                  query={query}
+                  onRequireConfirm={(s) => setConfirmTarget(s)}
+                />
                 {/* AI answer layer — always BELOW primary sources (spec §49).
-                    key={query} forces a clean remount on every new search so
-                    the previous stream is fully torn down (no stale sources). */}
+                    key={query+mode} forces a clean remount on every new search so
+                    the previous stream is fully torn down (no stale evidence). */}
                 <div className="pt-2">
                   <AgentAnswer
-                    key={query}
+                    key={`${query}|${mode}`}
                     query={query}
                     sources={results}
                     autoStart
+                    warnings={warnings.map((w) => w.message)}
                     dateContext={parsedQuery ? {
                       date: parsedQuery.date,
                       wantsHistorical: parsedQuery.wantsHistoricalLaw,
@@ -224,7 +302,7 @@ export default function Home() {
         <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-2 px-4 py-6 text-xs text-neutral-500 dark:text-neutral-400 sm:flex-row sm:px-6 sm:py-5">
           <div className="flex items-center gap-1.5">
             <Scale className="h-3.5 w-3.5 text-neutral-400 dark:text-neutral-500" aria-hidden />
-            <span>Տվյալների աղբյուր՝ </span>
+            <span>Աղբյուրներ՝ </span>
             <a
               href="https://arlis.am"
               target="_blank"
@@ -233,12 +311,40 @@ export default function Home() {
             >
               ARLIS.am
             </a>
+            <span aria-hidden>·</span>
+            <a
+              href="https://datalex.am"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-neutral-700 hover:text-neutral-900 hover:underline dark:text-neutral-300 dark:hover:text-neutral-100"
+            >
+              Datalex.am
+            </a>
+            <span aria-hidden>·</span>
+            <a
+              href="https://concourt.am"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-neutral-700 hover:text-neutral-900 hover:underline dark:text-neutral-300 dark:hover:text-neutral-100"
+            >
+              Concourt.am
+            </a>
           </div>
           <p className="text-center text-neutral-500 dark:text-neutral-400 sm:text-right">
             Սույն կայքը հանդիսանում է որոնողական գործիք և չի փոխարինում իրավական խորհրդատվությանը։
           </p>
         </div>
       </footer>
+
+      {/* Phase 3 §25/§63-§64 — interactive source confirmation (CAPTCHA) */}
+      {confirmTarget && (
+        <SourceConfirmDialog
+          source={confirmTarget}
+          query={query}
+          onClose={() => setConfirmTarget(null)}
+          onResolved={onEvidenceResolved}
+        />
+      )}
     </div>
   );
 }
@@ -246,9 +352,9 @@ export default function Home() {
 function FooterLinks() {
   return (
     <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-neutral-400 dark:text-neutral-500">
-      <span>Աղբյուր՝ ARLIS.am</span>
+      <span>Աղբյուրներ՝ ARLIS · Datalex · Սահմանադրական դատարան</span>
       <span aria-hidden>·</span>
-      <span>AI վերլուծություն՝ հղումներով</span>
+      <span>AI վերլուծություն՝ ստուգելի հղումներով</span>
       <span aria-hidden>·</span>
       <span>Չի փոխարինում իրավական խորհրդատվությանը</span>
     </div>

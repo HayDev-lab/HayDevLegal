@@ -50,6 +50,27 @@ export type LegalSource = {
 
   /** Optional human-readable source label: Օրենսդրություն / Վճռաբեկ դատարան / ... */
   sourceLabel?: SourceLabel;
+
+  // ---- Phase 3 (full-document resolution) optional fields -------------------
+
+  /** Evidence grade: PRIMARY_VERIFIED / PRIMARY_METADATA / SECONDARY_VERIFIED / DISCOVERY_ONLY */
+  evidenceGrade?: "PRIMARY_VERIFIED" | "PRIMARY_METADATA" | "SECONDARY_VERIFIED" | "DISCOVERY_ONLY";
+  /** Full original text was retrieved AND identity-verified. */
+  fullTextVerified?: boolean;
+  /** Structured metadata (case number, court, dates) came from the source. */
+  metadataVerified?: boolean;
+  /** Document access state for gated sources (e.g. CAPTCHA_REQUIRED). */
+  accessState?: "DIRECT" | "SESSION_REQUIRED" | "CAPTCHA_REQUIRED" | "AUTH_REQUIRED" | "RATE_LIMITED" | "RESTRICTED";
+  /** How the full text was resolved (resolver strategy). */
+  resolvedVia?: string;
+  /** "source:externalId" reference for the interactive resume flow. */
+  documentRef?: string;
+  /** Court for case-law results. */
+  court?: string;
+  /** Case number for case-law results. */
+  caseNumber?: string;
+  /** Where the full text was actually found (fallback resolution). */
+  resolvedViaUrl?: string;
 };
 
 export type SourceLabel =
@@ -112,6 +133,7 @@ export type SearchResponse = {
 /** A single streamed chunk from /api/answer. */
 export type AnswerChunk =
   | { type: "delta"; text: string }
+  | { type: "replace"; text: string }
   | { type: "done"; requestId: string; citations: CitationRef[] }
   | { type: "error"; message: string; requestId: string };
 

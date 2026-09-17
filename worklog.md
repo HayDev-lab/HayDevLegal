@@ -282,3 +282,154 @@ Stage Summary:
 - Date-sensitivity context flows from query parser → API → AI prompt → user-visible banner ✓
 - Next: potential future features (live ARLIS autocomplete API, per-result article text preview, search result export)
 
+
+---
+Task ID: 5-federated-search
+Agent: main
+Task: LIVE FEDERATED LEGAL SEARCH — implement online semantic-by-meaning search across Armenian legal internet sources WITHOUT RAG/vector DB/mirrors (master spec): query understanding, semantic + multilingual expansion, parallel live source adapters, document fetch, passage extraction, legal reranking, dedup, temporal validation, evidence pack, hallucination firewall, QUICK/DEEP modes, search trace UI.
+
+Work Log:
+
+**Phase 0 — Source reconnaissance (live probes from sandbox):**
+- ARLIS: existing pipeline intact (search JSON + act detail HTML + article extraction).
+- Datalex (datalex.am): REVERSED the BARL framework RPC — POST /json.php envelope {appName, moduleID:Common/ModGrid, function:getGridDataList, arg:[filterData, jqGrid, gridSearchDescription, sortByPrecedent]}. Session bootstrap via PHPSESSID. Grids: datalex_{civ,crim,adm,bankr}_case_info + _prec_ (precedents). VERIFIED live: civil "ծանուցում" → 727 precedents; criminal "խուզարկություն ապացույց" → 99,289 cases. Case VIEWING is CAPTCHA-gated → fetchDocument returns RESTRICTED, canonical URL provided (never bypassed).
+- Constitutional Court (concourt.am): Symfony CSRF form — GET /decisions/advanced-search (session cookie + token) + GET with decision_text[type/description] params → server-rendered mainDecision blocks (dates, ՍԴՈ numbers, titles, matched passages, PDF links). PDFs public → pdftotext extraction works. VERIFIED live.
+- HUDOC/echr.coe.int: Cloudflare 403 on ALL paths; Datalex HUDOC app is an iframe of the same blocked site → adapter reports honest RESTRICTED + builds user-openable deep links (eng#fragment state). No fabrication.
+- judiciary.am: down/blocked; court.am: Nuxt SPA without server search → Cassation precedent practice served through Datalex _prec_ indices (official judicial-info-system mirror).
+- Web: z-ai-web-dev-sdk functions.invoke("web_search") for general web results.
+
+**Phase 1 — Architecture (src/lib/legal-search/, existing ARLIS untouched):**
+- types.ts — LegalSourceAdapter contract (id/name/authority/sourceType/supports/search/fetchDocument/timeoutMultiplier), SearchContext, LegalSearchResult, LegalEvidence, SearchTrace, SourceStatus (SUCCESS/EMPTY/TIMEOUT/RATE_LIMITED/RESTRICTED/ERROR/UNSUPPORTED), FederatedSearchResponse.
+- config.ts — ALL weights centralized: TIMEOUTS (per-source/document/total, env-tunable), STAGES (candidates 12/source, 60 total → rerank 15 → fetch 5/10 → evidence 8), RANK_WEIGHTS (exactRef 100 + lexical 60 + concept 50 + authority 40 + temporal 25 + citationQuality 20), AUTHORITY hierarchy (legislation 100 > ConCourt 95 > court 90 > HUDOC 85 > Datalex 75 > local 70 > web 20), POLICY (concurrency, query limits).
+- security/url-policy.ts — SSRF hardening: scheme allowlist, localhost/0.0.0.0/::1/private ranges/link-local 169.254/metadata host blocks, IPv4-mapped-IPv6 whole-range block (URL API normalizes to hex — found via test), DNS resolution pinning (every address must be public, 60s cache), fetchGuarded() with timeout+size caps, readBodyCapped 3MB, contentHash.
+- security/content-sanitizer.ts — nav/script/style removal, entity decode, structural newlines, truncatePassage at sentence boundaries.
+
+**Phase 2 — Source adapters (engine knows nothing about sites):**
+- arlis/adapter.ts — wraps existing retrieveLegalSources (topN=12, no article fetch in search; fetchDocument does act-detail + extractArticle).
+- datalex/{client,adapter}.ts — RPC client (session cache 20min, grid cache 5min), case-law adapter (civil/criminal/admin/bankruptcy tabs by query intent, exact case-number mode 5), parties/claim/judge metadata, canonical case URLs.
+- judiciary/adapter.ts — Cassation precedents via _prec_ grids + sortByPrecedent, authority=OFFICIAL_COURT, deep-mode only.
+- constitutional-court/{client,adapter}.ts — CSRF bootstrap (module-load warm-up), word-root search, mainDecision block parser, PDF fetch + pdftotext, timeoutMultiplier 1.9 (1.5MB result pages).
+- hudoc/adapter.ts — RESTRICTED + respondent=ARM deep links from multilingual EN concepts.
+- web/adapter.ts — z-ai web_search (hy+en queries), official-domain boost, guarded doc fetch.
+- local-laws/{loader,search,adapter}.ts — curated corpus loader (frontmatter, article index), NO-RAG search: exact article by alias/title/fuzzy (Levenshtein), lexical+concept scoring.
+
+**Phase 3 — Engine (src/lib/legal-search/engine/):**
+- query-understanding.ts — deterministic (existing parser + exact-reference extraction) + LLM-assisted deep mode (concepts + 3-5 subquestions, JSON-only contract, fence-stripping, truncated-JSON salvage, 20s budget, silent fallback).
+- concept-lexicon.ts — 55 bilingual legal concepts (hy/en/ru + inflected forms + stems for Armenian morphology), domain tags.
+- query-expansion.ts — exact references FIRST (§10), concept combos, related phrases, keyword fallback, LLM subquestion variants, multilingual EN/RU concept translation (§11), explosion caps (8 quick / 12 deep).
+- source-orchestrator.ts — Promise.allSettled fan-out, per-source deadline race (multiplier-aware), stage-1 caps, trace entries.
+- passage-extractor.ts — article-boundary splitting, token+concept scoring (multilingual tokens), top-3 passages.
+- legal-reranker.ts — finalScore per spec §16, authority weighting, temporal bonus/penalty (historical-intent flip), citation-quality signals, source-diversity caps (60% deep / 75% quick).
+- deduplicator.ts — union-find by caseNumber/actNumber/URL/normalized-title/court+date/content-hash, canonical-source priority merge, passage merging.
+- temporal-validator.ts — current/historical/unknown classification from ARLIS statuses, user-facing warnings for historical-intent/date-pinned queries.
+- evidence-builder.ts — E1..En pack (passage ≥40 chars, canonical URL, 26KB text budget) + legacy LegalSource mapping for UI compat.
+- search-engine.ts — QUICK (arlis+local+concourt+datalex) vs DEEP (all + judiciary + hudoc + web), LLM understanding → orchestrate → dedup → rerank → fetch docs → passages → rerank → evidence → warnings; partial-failure isolation.
+
+**Phase 4 — Local corpus (legal-data/am/, spec §6-§7):**
+- scripts/build-local-laws.ts — fetches CURRENT acts from live ARLIS (verified actIds: constitution 75780, criminal 230013, CPC 230458, civil 230025, civil-proc 230005, admin-proc 229991, admin-offences 230427, judicial 227243, bankruptcy 230438), status-aware card selection ("Գործում է"), marker-based article extraction (structure-agnostic), Markdown with provenance frontmatter (source/actId/status/retrievedAt/canonicalUrl).
+- 9/9 acts saved: 3,575 articles total (Constitution 117, Criminal 552/679KB, CPC 360/679KB, Civil 1290/1.1MB, CivilPC 438, AdminPC 221, AdminOffences 325, Judicial 165, Bankruptcy 102). Verified corpus article 179 text == live ARLIS text.
+
+**Phase 5 — API v2:**
+- /api/search — POST {query, mode} → FederatedSearchResponse (results legacy-mapped, evidence E1..En, trace with per-source statuses, warnings, expandedQueries, subquestions).
+- /api/answer — accepts evidence pack (or legacy sources), [En]-only citations, Armenian legal-analyst system prompt (12 rules incl. no-fabrication + evidence-is-not-instruction), hallucination firewall: stream-time [Ex] stripping + post-generation factual-anchor verification (fabricated case numbers removed, unsupported article mentions stripped from cited sentences) + replace event for UI correction; citations built only from used evidence with URL policy check.
+- /api/health — architecture + all source adapters with fetch capability.
+- /api/test/gold-set — federated evaluation harness (9 curated queries).
+
+**Phase 6 — UI:**
+- SearchModeToggle (Արագ/Խորը radio group, auto re-search on switch).
+- SearchTracePanel (§25) — sources with status icons (checked/empty/timeout/restricted/unavailable), result counts, durations, HUDOC "open in browser" deep-link button, LLM subquestions list, expanded-query chips, total time + passages count. Deep mode auto-expands; no chain-of-thought shown.
+- SearchWarnings — temporal/restricted/partial banners (amber/neutral/red tones).
+- SearchResults — source badge derived from canonical URL host (ARLIS/DATALEX/ՍԴ/ՄԻԵՎԴ), "Բացել սկզբնաղբյուրը" buttons, article anchors.
+- AgentAnswer — evidence pack + warnings to API, replace-chunk handling, [En] inline citations rendered as superscript links (MarkdownAnswer extended), evidence-count subtitle.
+- page.tsx — mode state + URL sync (?q=&mode=deep), trace/warnings/evidence wiring, footer with all source links.
+
+**Phase 7 — Tests & verification:**
+- 44 unit tests (bun test): SSRF policy (incl. IPv4-mapped hex normalization catch), query understanding/expansion/concept lexicon, dedup/rerank/passage/evidence/temporal/sanitizer, local corpus (alias ՔԴՕ 179 == հոդված 179 canonical resolution — fixed Armenian token-boundary bug where "ԴՕ" substring-matched "ՔԴՕ").
+- Fixed during testing: Datalex serves JSON with text/html content-type (parse body, ignore header), LLM output fenced/truncated (strip + salvage), ConCourt timeout under parallel load (multiplier + session warm-up), horizontal overflow from HUDOC deep-link URL (removed inline URL, break-words), mobile widths (SearchInsights keywords, citations truncation, header search min-w-0).
+- LIVE gold-set: 9/9 PASSED, Recall@N 100%, avg 7.4s. Source availability: arlis 5/9 (natural-language queries legitimately empty — ARLIS matches act titles), local-laws 7/9, datalex 5/5, constitutional-court 3/4, judiciary 3/3, hudoc 0/3 (honest RESTRICTED), web 3/3.
+- LIVE deep search (master-spec example "ոստիկանությունը խուզարկության ժամանակ..."): 22s, evidence mix {ConCourt 3, judiciary 4, local 1}, 5 LLM subquestions, 4 docs fetched, HUDOC RESTRICTED warning + deep link.
+- LIVE answer streaming: 752 events, citations only real evidence ids ([E3] CPC art 483), zero fabricated citations, replace-event pipeline verified.
+- Browser E2E (agent-browser): home + mode toggle render; quick search → 6 ARLIS evidence cards with E1..E6, "Բացել սկզբնաղբյուրը" + "Հոդված 108" links, AI streams to done with citations footer; deep toggle → trace panel (4 sources, HUDOC restricted, 8.5s cached); dark mode toggle works; mobile 375px no horizontal scroll; desktop 1280px no horizontal scroll; console clean; tsc 0 errors; eslint 0 problems; dev.log 0 errors.
+
+Stage Summary:
+- LIVE_FEDERATED_SEARCH_PASS ✓ (6 working live sources + honest RESTRICTED for HUDOC; no RAG, no mirrors, no crawlers)
+- QUERY_UNDERSTANDING_PASS ✓ (concepts + subquestions + multilingual, exact references override)
+- EVIDENCE_PACK_PASS ✓ (E1..En with canonical URLs, passages, temporal status)
+- HALLUCINATION_FIREWALL_PASS ✓ ([En]-only citations, anchor verification, replace correction)
+- QUICK_DEEP_MODES_PASS ✓ (mode toggle, source sets, trace UI)
+- LOCAL_CORPUS_PASS ✓ (9 current acts, 3,575 articles, provenance frontmatter)
+- SECURITY_PASS ✓ (SSRF policy + tests)
+- TESTS_PASS ✓ (44 unit + gold-set 9/9 live)
+- E2E_PASS ✓ (browser-verified interactivity, responsive, dark mode)
+
+---
+Task ID: 6-phase3-full-document-resolution
+Agent: main
+Task: PHASE 3 MASTER PROMPT — Full Document Resolution + HUDOC + Datalex Session Flow + Cassation Multi-Source. Maximize the share of queries where HayDevLegal obtains the REAL FULL TEXT of the primary source (not just metadata/snippets), with honest gated-access states, identity-verified fallback resolution, and zero wrong documents.
+
+Work Log:
+
+**Phase 0 — Inspect & baseline:**
+- Verified Phase 2 baseline per worklog: dev server healthy, 44/44 unit tests PASS. Trusted the code over the description.
+- Read all core modules: types, config, url-policy, source-registry, search-engine, evidence-builder, passage-extractor, all 7 adapters, answer route, UI components.
+
+**Phase 1 — Live probes (fresh, not from old data):**
+- HUDOC: curl → Cloudflare 403 everywhere (browser UI + /app/query/results POST + ks.echr.coe.int). BUT Node/undici fetch PASSES Cloudflare! Discovered /app/query/results POST form is dead (404) — HUDOC was re-platformed.
+- Reverse-engineered the CURRENT HUDOC API from compiled.js + live probes: GET /app/query/results?query=(contentsitename=ECHR) AND (appno="11275/07")...&select=...&sort=importance%20Desc — Solr-style chain; article facets use DASH form (article="5-3"); free-text = unfielded terms; response {resultcount, results:[{itemid, columns}]}. VERIFIED live: MURADYAN 11275/07 exact → real metadata; article 5-3 ARM → 192 results; /app/conversion/docx/html/body returns FULL JUDGMENT HTML (171KB).
+- Datalex: showCase RPC contract reverse-engineered from ModCaseViewer/mod-case-view.js + BARL base.js: POST /json.php moduleID=ModCaseViewer function=showCase arg=["<captcha>"] module_params={caseID,...} → result:false + system_note errorType:"captcha" = CAPTCHA_REQUIRED; result.html = full case. Captcha image = plain GIF proxied per-session.
+- CRITICAL Datalex regression found: the old flat filter (data[verdict][value][]) is SILENTLY IGNORED by the current backend — every query returned the same default listing (1051 rows). Live-verified NEW contract: NESTED {verdict:{value:[],type:[]}} + structured {case_number:"ՎԴ/0008/05/23"} (exact, total=1).
+- court.am = Nuxt CMS portal (no decision DB; /api/v1 404s) — only useful for web-discovery. judiciary.am unreachable. echrcaselaw.com 403. worldcourts 404.
+- z-ai web_search: HTTP 429 when >2 invocations run concurrently (live-reproduced) — HUDOC discovery silently degraded in the pipeline.
+
+**Phase 2 — Implementation (all knobs in config.ts RESOLUTION/CONCURRENCY/SESSION_STORE):**
+- types.ts: PARTIAL status; AccessState (DIRECT/SESSION_REQUIRED/CAPTCHA_REQUIRED/AUTH_REQUIRED/RATE_LIMITED/RESTRICTED); ExternalErrorKind (TIMEOUT/INVALID_RESPONSE/SERVER_ERROR/CLOUDFLARE_CHALLENGE/ACCESS_RESTRICTED/NOT_FOUND); ResolutionMethod ladder; evidence grades (PRIMARY_VERIFIED/PRIMARY_METADATA/SECONDARY_VERIFIED/DISCOVERY_ONLY); fullTextVerified/metadataVerified/identityVerified flags; RetrievalCompleteness; ResumableDocument; ResolutionCandidate/ResolvedLegalDocument; trace stages (search/metadata/document + resolutionNote).
+- sources/session-store.ts (§26-27): bounded (16, LRU), TTL'd sessions; cookies server-side only; captcha keys expire independently; diagnostics never expose cookie values (tested).
+- sources/web-search-client.ts: shared rate-limit-aware web_search queue (semaphore=2, 429 retry+backoff) — all three call sites (web adapter, HUDOC discovery, document resolver) now share it.
+- hudoc/query-builder.ts (§7-10): HudocQueryBuilder — toApiFilter() builds the live-verified Solr chain (exact appno / respondent / dash-form article / documentType / free-text), toWebDiscoveryQueries() yields up to 3 sequential variants (exact first). normalizeConventionArticle handles Article 5 §3 / Art 5(3) / P1-1 / 6-րդ հոդված.
+- hudoc/client.ts (§5-6, §11-20): searchHudocApi (GET contract, defensive parsing, language dedup EN>FR>translations), fetchHudocDocumentApi (conversion endpoint, 120KB cap), searchHudocViaWebDiscovery (official-domain discovery parsing real hudoc links+snippets into metadata-grade HudocDocuments; sequential variants with early exit), searchHudoc ladder (API → web discovery), getHudocMetadata. Outcome kinds incl. cloudflare_challenge (never confused with NOT_FOUND).
+- hudoc/adapter.ts (§4, §8-10): exact-appno-first query building, respondent=ARM signal, PARTIAL/RESTRICTED mapped honestly, fetchDocument attempts the native doc endpoint. timeoutMultiplier 2.
+- datalex/client.ts (§21-25): NESTED filter + structured case_number exact lookup (datalexExactCaseLookup across 4 grids); showCase RPC with captcha classification; bootstrapDatalexSession (dedicated per-user sessions); captcha image URL helper; grid cache keyed incl. caseNumber.
+- datalex/adapter.ts (§22-23, §28): PARTIAL + CAPTCHA_REQUIRED outcome (case EXISTS, metadata valid); fetchDocument reuses valid session captchaKey (§24), else honest PARTIAL; exact lookup wired (guarded against ECHR appnos).
+- judiciary/adapter.ts (§34-36): precedent grids + datalexExactCaseLookup (cassation numbers are primary identifiers §29); session-aware fetchDocument.
+- engine/reference-extractor.ts (§37-39): extractLegalReferences (Armenian case numbers with proper Unicode-aware boundaries + 3-4 segments, ՍԴՈ, ECHR appnos, ECLI, articles, act numbers), rankReferences, buildCitationGraph (per-request only), selectFollowableReferences (follows only identifiers NOT already held).
+- engine/document-resolver.ts (§30-33, §58-60, §65-67): resolveLegalDocument ladder (DIRECT API [adapters include ACTIVE_SESSION] → official-domain search → web discovery → SECONDARY → METADATA_ONLY); verifyIdentity (exact unique identifier auto-accept; strong combo court+date+title with title required + ≥2 signals); in-flight coalescing; bounded LRU doc cache; PDF path with pdfMaxBytes cap; official hosts preferred; SSRF policy on every fetch; health recording per capability.
+- engine/search-engine.ts v2: resolver-based stage 3 (bounded CONCURRENCY.maxConcurrentDocumentFetches pool); PASS 2 reference following (deep mode, ≤maxReferenceFollows, ECHR appno → HUDOC exact, Armenian case → Datalex exact, ՍԴՈ → concourt); completeness computation; resumable collection; trace v2 enrichment; PARTIAL-aware warnings; captcha note (§51).
+- engine/evidence-builder.ts v2 (§45-46): evidenceGrade + flags + documentRef + resolvedVia/Url/Source propagation to legacy UI mapping.
+- engine/passage-extractor.ts 2.0 (§43): scorePassage now weighs exactReference, heading structure, term proximity, query intent (rule/practice), court-reasoning markers (hy+en), source authority; extractPassages passes per-document signals.
+- engine/source-health.ts (§61-62): per-capability (search/document) health registry + circuit breaker (3 fails → 60s open, half-open).
+- engine/resume-store.ts (§63-64): bounded resume tokens (random, TTL, attempt-capped, count-capped).
+- app/api/resolve/* (§25, §63-64): GET bootstrap (dedicated Datalex session + token), GET captcha image proxy (token-bound cookies, no-store), POST resume (captcha submit → showCase retry → session retained for reuse → passages extracted against the original query). SSRF-checked; never blocks normal search.
+- app/api/health: per-source SEARCH vs DOCUMENT health + session diagnostics (no cookie values).
+- app/api/answer (§47-48, §15): evidence blocks now carry «Ամբողջական տեքստ՝ ՍՏՈՒԳՎԱԾ Է/ՉԷ»; system prompt rules 13-15 (no "court held" claims without verified full text; quotes only from verified passages; AI Armenian renderings of ECHR texts must be marked ոչ պաշտոնական թարգմանություն); verifyFactualAnchors now strips unverified «...» quotes to "(ոչ բառացի)".
+- UI (§50-53, §25): SearchTracePanel v2 (per-source ✓/△/✕ stages for որոնում/մետատվյալներ/ամբողջական տեքստ + resolution notes + factual completeness block — no fake confidence); SearchResults access chips (§51 labels) + caseNumber chip + «Բացել ամբողջական տեքստը» unlock button + «Տեքստի աղբյուրը» link for fallback-resolved; SourceConfirmDialog (captcha image + input + refresh + confirm; in-place card upgrade on success); page.tsx wiring.
+- query-parser fix (§29): CASE_NUMBER_RE now matches RAW text with uppercase-only Armenian court codes (the normalizer's abbreviation expansion destroyed ՎԴ prefixes — «դատարան/0008/05» bug) + 3-4 numeric segments; ECHR appno extraction (ՄԻԵՎԴ 11275/07 → caseNumber=11275/07). Datalex/Judiciary guarded against treating appnos as Datalex numbers.
+- concourt adapter: supports()/wantsCc extended to cassation-precedent concepts (ConCourt legal positions are the primary definitional source for նախադեփ questions — live-verified).
+
+**Phase 3 — Tests:**
+- tests/unit/phase3-resolution.test.ts: 31 new tests (HUDOC query builder + article normalization + exact-appno priority; web-discovery parsing contract incl. press links and rejects; reference extractor incl. Armenian Unicode boundaries, ՍԴՈ, ECLI, self-reference exclusion, followable selection; resolver identity verification incl. wrong-doc rejection and strong-combo; session store lifecycle + cookie secrecy; evidence grading; Datalex PARTIAL+CAPTCHA_REQUIRED classification; resume-store parsing/lifecycle/expiry).
+- Fixed during testing: JS \b doesn't work with Armenian letters (switched to lookarounds); Armenian case numbers have 3-4 segments; HUDOC press itemIds (00x- with extra dash); selectFollowableReferences must not filter cited identifiers (only held documents).
+- Totals: 75 unit tests PASS (44 old + 31 new). tsc clean. eslint clean. build PASS.
+
+**Phase 4 — Live verification (all against the running app):**
+- QUICK ՔԴՕ 179: 6 evidence, 5 full texts, PRIMARY_VERIFIED.
+- DEEP ձերբակալություն: judiciary precedent full texts RESOLVED VIA arlis.am fallback (identifiers verified); ConCourt PDFs; completeness {40 found, 8 metadata, 8 fullTexts, 5 via fallback}; resumable list populated.
+- DEEP Article 5 §3 Armenia: HUDOC native API SUCCESS (5 cases, KUYUMJYAN PRIMARY_VERIFIED with operative-part passage) — §79 criteria met end-to-end.
+- DEEP ՄԻԵՎԴ 11275/07: MURADYAN v. ARMENIA PRIMARY_VERIFIED via DIRECT_API with real passage; exactIdentifier found.
+- Cassation exact ՎԴ/0008/05/23: exact case found via structured lookup (E1 judiciary, PRIMARY_METADATA + unlock button).
+- /api/resolve live flow: bootstrap 200 → captcha GIF proxied (image/gif 200x60) → wrong captcha → captcha_required (correct classification) — the real solve is user-only by design.
+- Answer engine live: 773 events, citations [E1 E2 E4 E5] all valid; NO invented case numbers/articles/URLs; no unverified quotes; replace-event pipeline works.
+- RESOLUTION GOLD SET (§76-78): 8/8 PASSED; metrics: metadataHitRate 100%, fullTextResolutionRate 87.5%, primaryFullTextRate 87.5%, fallbackResolutionRate varies (0-62.5% run-dependent), wrongDocumentRate 0.0%, exactIdentifierAccuracy 100%.
+- ORIGINAL GOLD SET (§84 regression): 9/9 PASSED, recall@N 100%.
+- Browser E2E (agent-browser): home; quick results with access chips; deep results with trace stages (✓/△/✕) + completeness line + resolution notes; VD-exact deep: 8 cards — 1 «Պահանջվում է աղբյուրի հաստատում» + 7 «Պաշտոնական ամբողջական տեքստ»; captcha dialog opens (title, case number, image, input, confirm button verified in DOM); HUDOC case card (MURADYAN) with ՄԻԵՎԴ badge; dark mode; mobile 375px scrollWidth=375 (no overflow); console clean.
+
+Stage Summary:
+- FULL_DOCUMENT_RESOLUTION_PASS ✓ (resolver 2.0 with identity verification; coalescing+cache; §59-60)
+- HUDOC_LIVE_PASS ✓ (native GET API + conversion endpoint work from Node egress; web-discovery fallback; language dedup; §79 chain verified)
+- DATALEX_SESSION_FLOW_PASS ✓ (nested-filter fix; structured exact lookup; showCase captcha contract; dedicated sessions; interactive resume; PARTIAL honesty §23)
+- CASSATION_MULTI_SOURCE_PASS ✓ (precedent grids + exact numbers + official-domain discovery; passages prioritize court reasoning §36)
+- EVIDENCE_V2_PASS ✓ (grades, fullTextVerified≠metadataVerified, completeness §52, no fake confidence §53)
+- ANSWER_RULES_PASS ✓ (§47-48 quote/citation firewall extended and live-verified)
+- SECURITY_PASS ✓ (SSRF tests intact; session cookies server-only; resume tokens bounded; captcha proxy fixed-URL)
+- NO_REGRESSION_PASS ✓ (gold 9/9, resolution gold 8/8, 75 unit tests)
+- BUILD_GATE_PASS ✓ (tsc, eslint, bun test, next build, browser E2E)
+- Remaining external limitations: HUDOC API/conversion reachable only from egresss where Cloudflare clears Node/undici (this runtime: OK); Datalex full texts remain user-captcha-gated by design (never bypassed); web_search rate limit (429) handled via shared serialized queue.

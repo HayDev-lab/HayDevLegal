@@ -127,11 +127,11 @@ type InlineSegment =
   | { type: "code"; value: string }
   | { type: "cite"; id: string };
 
-/** Parse inline markdown: **bold**, *italic*, `code`, [Sn] citations. */
+/** Parse inline markdown: **bold**, *italic*, `code`, [Sn]/[En] citations. */
 function parseInline(text: string): InlineSegment[] {
   const segments: InlineSegment[] = [];
-  // Tokenize: **...** | *...* | `...` | [S\d+]
-  const re = /(\*\*([^*]+)\*\*|\*([^*]+)\*|`([^`]+)`|\[S(\d+)\])/g;
+  // Tokenize: **...** | *...* | `...` | [S\d+] | [E\d+]
+  const re = /(\*\*([^*]+)\*\*|\*([^*]+)\*|`([^`]+)`|\[([SE])(\d+)\])/g;
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
@@ -145,7 +145,7 @@ function parseInline(text: string): InlineSegment[] {
     } else if (m[4] !== undefined) {
       segments.push({ type: "code", value: m[4] });
     } else if (m[5] !== undefined) {
-      segments.push({ type: "cite", id: `S${m[5]}` });
+      segments.push({ type: "cite", id: `${m[5]}${m[6]}` });
     }
     last = m.index + m[0].length;
   }

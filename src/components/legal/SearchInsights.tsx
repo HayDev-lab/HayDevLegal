@@ -79,7 +79,7 @@ export function SearchInsights({ parsed, resultCount, retrievalMs }: SearchInsig
           <div key={i} className="flex items-center gap-1.5">
             <span className="text-neutral-400 dark:text-neutral-500">{item.icon}</span>
             <span className="font-medium text-neutral-500 dark:text-neutral-400">{item.label}՝</span>
-            <span className="max-w-[20rem] truncate text-neutral-700 dark:text-neutral-200" title={item.value}>
+            <span className="max-w-[9rem] truncate sm:max-w-[18rem] text-neutral-700 dark:text-neutral-200" title={item.value}>
               {item.value}
             </span>
           </div>

@@ -1,17 +1,19 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { ExternalLink, FileText, Scale, Gavel, Landmark, Globe, ChevronRight, Filter, BookOpen } from "lucide-react";
+import { ExternalLink, FileText, Scale, Gavel, Landmark, Globe, ChevronRight, Filter, BookOpen, ShieldAlert, ShieldCheck, Search } from "lucide-react";
 import type { LegalSource, SourceLabel } from "@/lib/legal/types";
 import { cn } from "@/lib/utils";
 
 type SearchResultsProps = {
   results: LegalSource[];
   query: string;
+  /** Phase 3 §63-§64 — open the interactive source-confirmation dialog. */
+  onRequireConfirm?: (source: LegalSource) => void;
 };
 
-const STATUS_IN_FORCE = ["գործունակ", "գործում է"];
-const STATUS_NOT_IN_FORCE = ["չի գործունակ", "չի գործում", "ուժը կորցրել է"];
+const STATUS_IN_FORCE = ["գործունակ", "գործում է", "գործող", "գործում"];
+const STATUS_NOT_IN_FORCE = ["չի գործունակ", "չի գործում", "ուժը կորցրել է", "պատմական"];
 
 const ALL_LABELS: SourceLabel[] = [
   "Օրենսդրություն",
@@ -64,7 +66,44 @@ function labelIcon(label?: SourceLabel) {
   }
 }
 
-function ResultCard({ source, index }: { source: LegalSource; index: number }) {
+/** Phase 3 §51 — user-facing access status labels. */
+function accessTone(source: LegalSource): { label: string; className: string } | null {
+  if (source.fullTextVerified) {
+    return {
+      label: "Պաշտոնական ամբողջական տեքստ",
+      className: "text-emerald-700 bg-emerald-50 border-emerald-200 dark:text-emerald-400 dark:bg-emerald-950/30 dark:border-emerald-900/50",
+    };
+  }
+  if (source.accessState === "CAPTCHA_REQUIRED") {
+    return {
+      label: "Պահանջվում է աղբյուրի հաստատում",
+      className: "text-amber-700 bg-amber-50 border-amber-200 dark:text-amber-400 dark:bg-amber-950/30 dark:border-amber-900/50",
+    };
+  }
+  if (source.resolvedVia === "OTHER_OFFICIAL_SOURCE" || source.resolvedVia === "WEB_DISCOVERY") {
+    return {
+      label: "Գտնվել է այլ պաշտոնական աղբյուրում",
+      className: "text-blue-700 bg-blue-50 border-blue-200 dark:text-blue-400 dark:bg-blue-950/30 dark:border-blue-900/50",
+    };
+  }
+  if (source.metadataVerified) {
+    return {
+      label: "Միայն մետատվյալներ",
+      className: "text-neutral-600 bg-neutral-50 border-neutral-200 dark:text-neutral-400 dark:bg-neutral-800 dark:border-neutral-700",
+    };
+  }
+  return null;
+}
+
+function ResultCard({
+  source,
+  index,
+  onRequireConfirm,
+}: {
+  source: LegalSource;
+  index: number;
+  onRequireConfirm?: (source: LegalSource) => void;
+}) {
   const status = statusTone(source.status);
   const url = source.canonicalUrl || "";
   const host = (() => {
@@ -74,6 +113,17 @@ function ResultCard({ source, index }: { source: LegalSource; index: number }) {
       return "arlis.am";
     }
   })();
+  // Source badge derives from the canonical URL host (§26): the user must
+  // always see WHICH source the document came from.
+  const sourceBadge = /arlis\.am/.test(host)
+    ? "ARLIS"
+    : /datalex\.am/.test(host)
+      ? "DATALEX"
+      : /concourt\.am/.test(host)
+        ? "ՍԴ"
+        : /hudoc|echr/.test(host)
+          ? "ՄԻԵՎԴ"
+          : host || "ԱՂԲՅՈՒՐ";
   const urlPath = (() => {
     try {
       return url ? new URL(url).pathname : "";
@@ -101,7 +151,7 @@ function ResultCard({ source, index }: { source: LegalSource; index: number }) {
           {/* Source badge row */}
           <div className="mb-1.5 flex flex-wrap items-center gap-2 text-xs">
             <span className="inline-flex items-center gap-1 rounded-md bg-neutral-900 px-2 py-0.5 font-semibold tracking-wide text-white dark:bg-white dark:text-neutral-900">
-              ARLIS
+              {sourceBadge}
             </span>
             {source.sourceLabel && (
               <span className="inline-flex items-center gap-1 rounded-md border border-neutral-200 bg-neutral-50 px-2 py-0.5 text-neutral-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400">
@@ -125,6 +175,27 @@ function ResultCard({ source, index }: { source: LegalSource; index: number }) {
               <span className={cn("h-1.5 w-1.5 rounded-full", status.dot)} />
               {status.label}
             </span>
+            {/* Phase 3 §51 — access status (full text / metadata / confirmation). */}
+            {(() => {
+              const tone = accessTone(source);
+              if (!tone) return null;
+              const Icon = source.fullTextVerified
+                ? ShieldCheck
+                : source.accessState === "CAPTCHA_REQUIRED"
+                  ? ShieldAlert
+                  : source.resolvedVia === "OTHER_OFFICIAL_SOURCE" || source.resolvedVia === "WEB_DISCOVERY"
+                    ? Search
+                    : FileText;
+              return (
+                <span
+                  className={cn("inline-flex items-center gap-1 rounded-md border px-2 py-0.5 font-medium", tone.className)}
+                  title="Տեքստի հասանելիություն"
+                >
+                  <Icon className="h-3 w-3" aria-hidden />
+                  {tone.label}
+                </span>
+              );
+            })()}
           </div>
 
           {/* Title — clickable, opens real ARLIS page */}
@@ -203,7 +274,7 @@ function ResultCard({ source, index }: { source: LegalSource; index: number }) {
                 className="inline-flex items-center gap-1.5 rounded-md border border-neutral-200 bg-white px-2.5 py-1 text-xs font-medium text-neutral-700 transition-colors hover:border-neutral-300 hover:bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
               >
                 <BookOpen className="h-3 w-3" aria-hidden />
-                Բացել ակտը
+                Բացել սկզբնաղբյուրը
                 <ExternalLink className="h-2.5 w-2.5 opacity-50" aria-hidden />
               </a>
               {source.article && url && (
@@ -218,8 +289,37 @@ function ResultCard({ source, index }: { source: LegalSource; index: number }) {
                   Հոդված {source.article}
                 </a>
               )}
+              {source.caseNumber && (
+                <span className="inline-flex items-center rounded-md border border-neutral-200 bg-neutral-50 px-2 py-0.5 text-neutral-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-400">
+                  {source.caseNumber}
+                </span>
+              )}
+              {/* Phase 3 §63-§64 — interactive unlock of the gated full text. */}
+              {source.accessState === "CAPTCHA_REQUIRED" && source.documentRef && onRequireConfirm && (
+                <button
+                  type="button"
+                  onClick={() => onRequireConfirm(source)}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-900/40"
+                >
+                  <ShieldAlert className="h-3 w-3" aria-hidden />
+                  Բացել ամբողջական տեքստը
+                </button>
+              )}
+              {source.resolvedViaUrl && source.fullTextVerified && (
+                <a
+                  href={source.resolvedViaUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-900/40"
+                  title="Ամբողջական տեքստի այլ պաշտոնական աղբյուր"
+                >
+                  <Search className="h-3 w-3" aria-hidden />
+                  Տեքստի աղբյուրը
+                  <ExternalLink className="h-2.5 w-2.5 opacity-50" aria-hidden />
+                </a>
+              )}
               <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-neutral-300 dark:text-neutral-600">
-                ARLIS · {source.actId ?? "—"}
+                {host}
               </span>
             </div>
           )}
@@ -229,7 +329,7 @@ function ResultCard({ source, index }: { source: LegalSource; index: number }) {
   );
 }
 
-export function SearchResults({ results, query }: SearchResultsProps) {
+export function SearchResults({ results, query, onRequireConfirm }: SearchResultsProps) {
   const [activeFilter, setActiveFilter] = useState<SourceLabel | "all">("all");
 
   // Compute which labels are present in the results
@@ -305,7 +405,12 @@ export function SearchResults({ results, query }: SearchResultsProps) {
 
       <div className="space-y-3">
         {filteredResults.map((r, i) => (
-          <ResultCard key={`${r.actId ?? r.canonicalUrl ?? i}-${i}`} source={r} index={results.indexOf(r)} />
+          <ResultCard
+            key={`${r.actId ?? r.canonicalUrl ?? i}-${i}`}
+            source={r}
+            index={results.indexOf(r)}
+            onRequireConfirm={onRequireConfirm}
+          />
         ))}
       </div>
       {filteredResults.length === 0 && activeFilter !== "all" && (

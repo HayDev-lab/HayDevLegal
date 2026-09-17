@@ -14,7 +14,15 @@ import { lookupAbbreviation } from "./abbreviations";
 
 const ARTICLE_RE = /հոդված\s*(\d{1,4})(?:\s*[.\u0589:])?\s*(?:մաս\s*(\d{1,3}))?(?:\s*կետ\s*(\d{1,3}))?/iu;
 const ARTICLE_REVERSE_RE = /(\d{1,4})\s*հոդված/u;
-const CASE_NUMBER_RE = /([Ա-Ֆա-ֆA-Za-z]+\/?\d{2,5}\/\d{2,4}(?:\.\d{1,2})?)/u;
+/**
+ * Armenian case number: UPPERCASE court code ending in Դ/ՔԴ/ՔՐԴ (ԵԴ, ՎԴ,
+ * ԵԿԴ, ԱՎԴ…) + 3-4 numeric segments, e.g. ՎԴ/0008/05/23.
+ * Uppercase-only: lowercase Armenian words (դատարան…) followed by digits
+ * are NOT case numbers — live-caused bug (Phase 3 §29).
+ */
+const CASE_NUMBER_RE = /([Ա-Ֆ]{1,6}(?:ՔՐԴ|ՔԴ|Դ)\/\d{2,5}\/\d{2,4}(?:\/\d{2,4})?(?:\.\d{1,2})?)/u;
+/** ECHR application number: 4-5 digits + / + 2 digits, e.g. 11275/07. */
+const ECHR_APPNO_RE = /(\d{4,5}\/\d{2})/u;
 const DATE_RE = /(\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2,4})\s*(?:դրությամբ|թվականին)?/u;
 const YEAR_RE = /(\d{4})\s*թվական(?:ին|ի)?/u;
 const HISTORICAL_RE = /(նախկին\s+խմբագրությամբ|նախկին\s+տարբերակով|հին\s+խմբագրությամբ|նախկին\s+տեքստով|նախկին\s+խմբագրություն)/u;
@@ -55,11 +63,21 @@ export function parseLegalQuery(raw: string): LegalQuery {
     if (yearM) result.date = yearM[1];
   }
 
-  // ---- Case number
-  const caseM = normalized.match(CASE_NUMBER_RE);
+  // ---- Case number (§29 + ECHR application numbers)
+  // Match against BOTH raw and normalized text: normalizeQuery expands court
+  // abbreviations (ՎԴ -> "Վճռաբեկ դատարան"), which DESTROYS the number prefix
+  // in the normalized string — the raw match is authoritative.
+  const caseM = raw.match(CASE_NUMBER_RE) ?? normalized.match(CASE_NUMBER_RE);
   if (caseM) {
     result.caseNumber = caseM[1];
     result.questionType = "case_law";
+  } else {
+    // ECHR application number (ՄԻԵՎԴ 11275/07 գործ) — also from raw first.
+    const appnoM = raw.match(ECHR_APPNO_RE) ?? normalized.match(ECHR_APPNO_RE);
+    if (appnoM && !CASE_NUMBER_RE.test(normalized)) {
+      result.caseNumber = appnoM[1];
+      result.questionType = "case_law";
+    }
   }
 
   // ---- Article
