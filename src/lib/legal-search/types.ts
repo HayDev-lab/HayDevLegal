@@ -464,6 +464,12 @@ export type FederatedSearchResponse = {
   completeness: RetrievalCompleteness;
   /** Phase 3 §64 — documents unlockable via the interactive resume flow. */
   resumable: ResumableDocument[];
+  /**
+   * Phase 4 — legal research intelligence report (deep mode only):
+   * issue map, roles, holdings, applicability, relations, conflicts,
+   * argument map, completeness. Consumed by /api/answer and the UI.
+   */
+  research?: import("@/lib/legal-research/types").ResearchReport;
   retrieval: {
     ok: boolean;
     durationMs: number;

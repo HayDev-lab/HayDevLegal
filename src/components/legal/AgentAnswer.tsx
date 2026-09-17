@@ -17,6 +17,7 @@ import {
   Share2,
 } from "lucide-react";
 import type { LegalSource, CitationRef, AnswerChunk } from "@/lib/legal/types";
+import type { ResearchReport } from "@/lib/legal-research/types";
 import { cn } from "@/lib/utils";
 import { MarkdownAnswer } from "./MarkdownAnswer";
 
@@ -29,6 +30,8 @@ type AgentAnswerProps = {
   dateContext?: { date?: string; wantsHistorical?: boolean; wantsCurrent?: boolean };
   /** Search warnings (temporal / restricted) reflected in the AI prompt. */
   warnings?: string[];
+  /** Phase 4 — structured research report (deep mode) for the answer engine. */
+  research?: ResearchReport;
 };
 
 type StreamState = "idle" | "thinking" | "streaming" | "done" | "error";
@@ -38,7 +41,7 @@ type Turn = {
   content: string;
 };
 
-export function AgentAnswer({ query, sources, autoStart = true, dateContext, warnings }: AgentAnswerProps) {
+export function AgentAnswer({ query, sources, autoStart = true, dateContext, warnings, research }: AgentAnswerProps) {
   const [text, setText] = useState("");
   const [state, setState] = useState<StreamState>("idle");
   const [citations, setCitations] = useState<CitationRef[]>([]);
@@ -85,6 +88,7 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext, war
             history: history ?? (followUpQuery ? turns : undefined),
             dateContext: followUpQuery ? undefined : dateContext,
             warnings: followUpQuery ? undefined : warnings,
+            research: followUpQuery ? undefined : research,
           }),
           signal: ctrl.signal,
         });

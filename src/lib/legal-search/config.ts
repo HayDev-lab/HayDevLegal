@@ -200,3 +200,32 @@ export const SESSION_STORE = {
   /** Solved CAPTCHA keys are short-lived by design. */
   captchaKeyTtlMs: 15 * 60 * 1000,
 } as const;
+
+// ---------------------------------------------------------------------------
+// Phase 4 — research intelligence analysis budget (master prompt §71, §72).
+//   80 candidates -> rerank -> 10 docs -> role classification ->
+//   6-8 strongest authorities -> deep applicability.
+// ---------------------------------------------------------------------------
+
+export const ANALYSIS = {
+  /** §72 — max precedents entering deep applicability analysis. */
+  maxPrecedentsAnalyzed: envInt("ANALYSIS_MAX_PRECEDENTS", 8),
+  /** §71 — max verified holdings kept per document. */
+  maxHoldingsPerDocument: envInt("ANALYSIS_MAX_HOLDINGS", 3),
+  /** §71 — max precedent relations followed per request. */
+  maxRelationsFollowed: envInt("ANALYSIS_MAX_RELATIONS", 6),
+  /** §71 — max counter-authorities surfaced in the argument map. */
+  maxCounterAuthorities: envInt("ANALYSIS_MAX_COUNTER_AUTHORITIES", 4),
+  /** §105 — whole-pipeline budget for the research layer (deep mode). */
+  timeBudgetMs: envInt("ANALYSIS_TIME_BUDGET_MS", 24_000),
+  /** §106 — max concurrent LLM analysis calls. */
+  maxConcurrentLlmCalls: envInt("ANALYSIS_MAX_CONCURRENT_LLM", 2),
+  /** §75-§76 — bounded retries for structured LLM output; then fail closed. */
+  llmMaxRetries: 1,
+  /** §73 — analysis cache keyed by contentHash + analysis version. */
+  cacheVersion: "4.0.0",
+  cacheSize: 64,
+  /** §70 — bounded second research pass when temporal risks are flagged. */
+  secondPassMaxQueries: 2,
+  secondPassTimeoutMs: 6_000,
+} as const;

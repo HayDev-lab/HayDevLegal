@@ -47,6 +47,9 @@ import { datalexSearchGridCached } from "../sources/datalex/client";
 import { concourtSearch } from "../sources/constitutional-court/client";
 import { searchHudocViaWebDiscovery } from "../sources/hudoc/client";
 import { HudocQueryBuilder } from "../sources/hudoc/query-builder";
+import { invokeWebSearch } from "../sources/web-search-client";
+import { runResearchPipeline } from "@/lib/legal-research/pipeline";
+import { ANALYSIS, OFFICIAL_DOMAINS } from "../config";
 import { tokenize } from "@/lib/legal/normalizer";
 
 /** Official-grade sources for evidence classification (§45). */
@@ -255,7 +258,7 @@ export async function federatedSearch(
   }
 
   // ---- 7. Evidence pack (stage 4) with grades + verification flags -------------
-  const evidence = buildEvidencePack(top);
+  let evidence = buildEvidencePack(top);
 
   // ---- 7b. Resumable documents (§63-§64) — unlockable via interactive flow ----
   const resumable: ResumableDocument[] = [];
@@ -284,6 +287,37 @@ export async function federatedSearch(
 
   // Trace v2 (§50): per-source search/metadata/document stages.
   trace.sources = trace.sources.map((entry) => enrichTraceEntry(entry, top, resolutionNotes));
+
+  // ---- 7d. PHASE 4: research intelligence layer (deep mode, §72) --------------
+  let research: import("@/lib/legal-research/types").ResearchReport | undefined;
+  if (mode === "deep" && evidence.length > 0 && Date.now() < deadline + ANALYSIS.timeBudgetMs) {
+    research = await runDeepResearch(
+      { query: rawQuery, understanding, evidence, deadline: Date.now() + ANALYSIS.timeBudgetMs },
+      top,
+      candidates,
+      understanding,
+      context,
+      async (refreshed) => {
+        // §70 second pass callback — extend the pack with verified finds.
+        top.length = 0;
+        top.push(...refreshed);
+      },
+    );
+    evidence = buildEvidencePack(top);
+
+    if (research.completeness.temporalRisks > 0) {
+      warnings.push({
+        kind: "temporal",
+        message: `${research.completeness.temporalRisks} աղբյուր ունի ժամանակային ռիսկ (ավելի ուշ պրակտիկա կամ խմբագրություն). մանրամասները՝ նախադեպի քարտի վրա։`,
+      });
+    }
+    if (research.partial) {
+      warnings.push({
+        kind: "partial",
+        message: "Խորքային վերլուծությունն ավարտվել է մասնակի. որոշ բաղադրիչներ կարող են բացակայել։",
+      });
+    }
+  }
 
   // ---- 8. Temporal warnings (spec §18) ----------------------------------------
   warnings.push(...temporalWarnings(understanding, top));
@@ -324,6 +358,7 @@ export async function federatedSearch(
     warnings,
     completeness,
     resumable,
+    research,
     retrieval: {
       ok,
       durationMs: Date.now() - start,
@@ -331,6 +366,76 @@ export async function federatedSearch(
     },
     requestId,
   };
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 4 — deep research orchestration + bounded second pass (§70, §105)
+// ---------------------------------------------------------------------------
+
+async function runDeepResearch(
+  input: import("@/lib/legal-research/types").ResearchInput,
+  top: LegalSearchResult[],
+  _candidates: LegalSearchResult[],
+  understanding: QueryUnderstanding,
+  context: SearchContext,
+  refreshTop: (refreshed: LegalSearchResult[]) => Promise<void>,
+): Promise<import("@/lib/legal-research/types").ResearchReport> {
+  let report = await runResearchPipeline(input);
+
+  // §70 — bounded SECOND RESEARCH PASS when the applicability engine flags
+  // that a later authority may exist (temporal risks with an identified
+  // provision). We do NOT make the LLM guess: one bounded exact search per
+  // flagged provision, max ANALYSIS.secondPassMaxQueries queries.
+  const flagged = report.temporal.filter(
+    (t) => t.compatibility === "POTENTIALLY_STALE" && t.lawVersion,
+  );
+  if (
+    flagged.length > 0 &&
+    Date.now() < input.deadline + ANALYSIS.secondPassTimeoutMs * ANALYSIS.secondPassMaxQueries
+  ) {
+    const added: LegalSearchResult[] = [];
+    for (const t of flagged.slice(0, ANALYSIS.secondPassMaxQueries)) {
+      const ev = input.evidence.find((e) => e.id === t.evidenceId);
+      if (!ev) continue;
+      const q = `${t.lawVersion} վճռաբեկ դատարան իրավական դիրք նոր պրակտիկա`;
+      const items = await invokeWebSearch(q, 3, ANALYSIS.secondPassTimeoutMs);
+      if (!items) break; // quota exhausted / timeout — do not keep hammering
+      for (const item of items) {
+        if (!OFFICIAL_DOMAINS.some((d) => item.url?.includes(d))) continue; // official only
+        if (top.some((r) => r.url === item.url)) continue;
+        added.push({
+          sourceId: "web",
+          sourceName: item.host_name ?? "Web",
+          sourceType: "web",
+          authority: 20,
+          title: item.name?.slice(0, 200) ?? "",
+          url: item.url,
+          excerpt: item.snippet ?? "",
+          temporalStatus: "unknown",
+          relevance: 0.2,
+          retrievedAt: new Date().toISOString(),
+        });
+      }
+    }
+    if (added.length > 0) {
+      top.push(...added);
+      const refreshed = rerank(deduplicate(top), understanding, "deep", STAGES.rerankKeep).map(
+        validateTemporal,
+      );
+      await refreshTop(refreshed);
+      const refreshedEvidence = buildEvidencePack(refreshed);
+      if (refreshedEvidence.length > 0) {
+        input = { ...input, evidence: refreshedEvidence };
+        // Cache-warm re-run: analyzed documents are LRU-cached (§73).
+        report = await runResearchPipeline({
+          ...input,
+          deadline: Date.now() + Math.max(4_000, ANALYSIS.timeBudgetMs / 2),
+        });
+      }
+    }
+  }
+
+  return report;
 }
 
 // ---------------------------------------------------------------------------

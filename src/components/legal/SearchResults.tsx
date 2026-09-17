@@ -3,6 +3,8 @@
 import { useState, useMemo } from "react";
 import { ExternalLink, FileText, Scale, Gavel, Landmark, Globe, ChevronRight, Filter, BookOpen, ShieldAlert, ShieldCheck, Search } from "lucide-react";
 import type { LegalSource, SourceLabel } from "@/lib/legal/types";
+import type { ResearchReport } from "@/lib/legal-research/types";
+import { PrecedentApplicability } from "./PrecedentApplicability";
 import { cn } from "@/lib/utils";
 
 type SearchResultsProps = {
@@ -10,6 +12,8 @@ type SearchResultsProps = {
   query: string;
   /** Phase 3 §63-§64 — open the interactive source-confirmation dialog. */
   onRequireConfirm?: (source: LegalSource) => void;
+  /** Phase 4 — research report for per-card applicability (deep mode). */
+  research?: ResearchReport;
 };
 
 const STATUS_IN_FORCE = ["գործունակ", "գործում է", "գործող", "գործում"];
@@ -99,10 +103,12 @@ function ResultCard({
   source,
   index,
   onRequireConfirm,
+  research,
 }: {
   source: LegalSource;
   index: number;
   onRequireConfirm?: (source: LegalSource) => void;
+  research?: ResearchReport;
 }) {
   const status = statusTone(source.status);
   const url = source.canonicalUrl || "";
@@ -323,13 +329,18 @@ function ResultCard({
               </span>
             </div>
           )}
+
+          {/* Phase 4 §57 — expandable applicability analysis (deep mode). */}
+          {research && source.id && (
+            <PrecedentApplicability evidenceId={source.id} research={research} />
+          )}
         </div>
       </div>
     </article>
   );
 }
 
-export function SearchResults({ results, query, onRequireConfirm }: SearchResultsProps) {
+export function SearchResults({ results, query, onRequireConfirm, research }: SearchResultsProps) {
   const [activeFilter, setActiveFilter] = useState<SourceLabel | "all">("all");
 
   // Compute which labels are present in the results
@@ -410,6 +421,7 @@ export function SearchResults({ results, query, onRequireConfirm }: SearchResult
             source={r}
             index={results.indexOf(r)}
             onRequireConfirm={onRequireConfirm}
+            research={research}
           />
         ))}
       </div>

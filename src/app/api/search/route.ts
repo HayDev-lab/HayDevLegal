@@ -18,7 +18,7 @@ import type { SearchResponse } from "@/lib/legal/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 const MAX_QUERY_LEN = 400;
 

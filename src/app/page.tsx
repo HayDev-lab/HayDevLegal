@@ -12,6 +12,8 @@ import { SearchTracePanel } from "@/components/legal/SearchTracePanel";
 import { SearchWarnings } from "@/components/legal/SearchWarnings";
 import { SearchModeToggle } from "@/components/legal/SearchModeToggle";
 import { SourceConfirmDialog } from "@/components/legal/SourceConfirmDialog";
+import { ArgumentMapPanel } from "@/components/legal/ArgumentMapPanel";
+import { ResearchSummary } from "@/components/legal/ResearchSummary";
 import type { LegalSource, LegalQuery } from "@/lib/legal/types";
 import type {
   FederatedSearchResponse,
@@ -19,6 +21,7 @@ import type {
   SearchTrace,
   SearchWarning,
 } from "@/lib/legal-search/types";
+import type { ResearchReport } from "@/lib/legal-research/types";
 import { Scale } from "lucide-react";
 
 type View = "home" | "searching" | "results" | "error" | "empty";
@@ -31,6 +34,7 @@ export default function Home() {
   const [parsedQuery, setParsedQuery] = useState<LegalQuery | undefined>();
   const [trace, setTrace] = useState<SearchTrace | undefined>();
   const [warnings, setWarnings] = useState<SearchWarning[]>([]);
+  const [research, setResearch] = useState<ResearchReport | undefined>();
   const [errorMsg, setErrorMsg] = useState<string | undefined>();
   const [retrievalMs, setRetrievalMs] = useState<number | undefined>();
   const [confirmTarget, setConfirmTarget] = useState<LegalSource | null>(null);
@@ -71,6 +75,7 @@ export default function Home() {
       setResults([]);
       setTrace(undefined);
       setWarnings([]);
+      setResearch(undefined);
       setErrorMsg(undefined);
       setRetrievalMs(undefined);
       updateUrl(q, m);
@@ -92,6 +97,7 @@ export default function Home() {
         setParsedQuery(data.parsed);
         setTrace(data.trace);
         setWarnings(data.warnings ?? []);
+        setResearch(data.research);
         if (!data.retrieval?.ok && data.evidence?.length === 0) {
           setErrorMsg(data.retrieval?.error);
           setView("error");
@@ -251,6 +257,11 @@ export default function Home() {
               />
             )}
 
+            {/* Phase 4 §102 — research completeness summary (deep mode). */}
+            {view === "results" && research && (
+              <ResearchSummary research={research} evidenceCount={results.length} />
+            )}
+
             {/* Search trace — retrieval activity (§25) */}
             {view === "results" && trace && <SearchTracePanel trace={trace} />}
 
@@ -269,10 +280,13 @@ export default function Home() {
 
                 {/* Date-sensitivity banner (spec §16) — above results */}
                 <DateSensitivityBanner parsed={parsedQuery} />
+                {/* Phase 4 §61 — argument map panel (deep mode, below sources). */}
+                {research && <ArgumentMapPanel research={research} />}
                 <SearchResults
                   results={results}
                   query={query}
                   onRequireConfirm={(s) => setConfirmTarget(s)}
+                  research={research}
                 />
                 {/* AI answer layer — always BELOW primary sources (spec §49).
                     key={query+mode} forces a clean remount on every new search so
@@ -284,6 +298,7 @@ export default function Home() {
                     sources={results}
                     autoStart
                     warnings={warnings.map((w) => w.message)}
+                    research={research}
                     dateContext={parsedQuery ? {
                       date: parsedQuery.date,
                       wantsHistorical: parsedQuery.wantsHistoricalLaw,
