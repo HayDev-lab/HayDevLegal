@@ -433,3 +433,33 @@ Stage Summary:
 - NO_REGRESSION_PASS ✓ (gold 9/9, resolution gold 8/8, 75 unit tests)
 - BUILD_GATE_PASS ✓ (tsc, eslint, bun test, next build, browser E2E)
 - Remaining external limitations: HUDOC API/conversion reachable only from egresss where Cloudflare clears Node/undici (this runtime: OK); Datalex full texts remain user-captcha-gated by design (never bypassed); web_search rate limit (429) handled via shared serialized queue.
+
+---
+Task ID: restore-lost-modules
+Agent: main (Super Z)
+Task: Post-sandbox-reset restoration — the `local-*` and `test` .gitignore patterns had silently excluded two source trees from every commit. Reconstructed them from the surviving worklog + probe artifacts, then re-ran all quality gates.
+
+Work Log:
+- ROOT CAUSE: `.gitignore` line `local-*` (bare prefix pattern) matched `src/lib/legal-search/local-laws/`, and line `test` matched `src/app/api/test/`. Both modules existed only in dead sandboxes: a fresh clone failed tsc (TS2307 Cannot find module '../local-laws/adapter') and `phase3-resolution.test.ts` could not even load (36 tests missing).
+- Reconstructed `src/lib/legal-search/local-laws/` (loader/search/adapter, spec §6-§7 + worklog description):
+  - loader.ts — frontmatter + `## Հոդված N` parsing of legal-data/am (9 acts, 3,570 articles + 9 prefaces), curated short titles/aliases per category, flat article list + inverted indexes (exact word form + 5-char inflection-prefix + title), lazy/memoized per-directory loading, LOCAL_LAWS_DIR exclusive override, fail-closed empty corpus.
+  - search.ts — deterministic NO-RAG ladder: (1) act resolution via ABBREVIATIONS token-exact (ՔԴՕ/ՔՕ/ՍԱ…, the historic ԴՕ-substring bug impossible by construction), boundary-regex phrase aliases, parser actTitle/exactRefs hints, Armenian prefix-stem (2/3 rule) + Levenshtein-1 fuzzy; (2) exact articles — «հոդված 179»/«179-րդ հոդված» both orders, guarded «ՔԴՕ 179» bare-number convention (case-number/part/year/hyphen guards), bare numbers WITHOUT act hint require per-article lexical support (fixes the English «Article 5» cross-act flood found live in r7); (3) lexical + concept scoring via inverted indexes with exact-reference band separation (0.98 alias+article / 0.88 supported bare / ≤0.85 lexical — no fake confidence).
+  - adapter.ts — LegalSourceAdapter (id local-laws, authority localCuratedLaws 70, sourceType local_laws), fullText + fullTextVerified at search time (zero network), ARLIS canonicalUrl + snapshot provenance in meta, fetchDocument from corpus by externalId/meta/URL, honest EMPTY degradation.
+- Rebuilt `src/app/api/test/` QA harness routes (never committed due to the `test` pattern), reconstructed from recorded probe outputs:
+  - gold-set/route.ts — 9 federated queries (quick/deep), anyOfTerms + expectedArticle + expectEmpty criteria, sourceAvailability counting PARTIAL as available.
+  - resolution-gold-set/route.ts — 8 deep scenarios with per-scenario exactIdentifier / expectTerms / minFullTexts / minMetadata, wrong-document guard, the 6 Phase-3 metrics.
+- .gitignore fixed: `local-*` → `/local-*`, `test`/`prompt` → `/test`//prompt, with explanatory comments + `!src/lib/legal-search/local-laws/` belt-and-suspenders.
+- Tests: tests/unit/local-laws.test.ts — 19 tests (loader counts/provenance/fail-closed, ՔԴՕ 179 + ՔՕ 179 historic regression, ՍԱ 42 + inflected սահմանադրության, civil-code genitive, bare-number support rules, Article-5 flood regression, adapter contract, fetchDocument by all three keys, unknown-doc EMPTY).
+
+Verification (all live against the running dev server):
+- tsc clean; eslint clean; bun test 134/134 PASS; next build PASS (routes list includes both /api/test/* harnesses).
+- LIVE retrieval gold set: 9/9 PASS, recall@N 100% (g1 ՔԴՕ 179 → 6 evidence, article 179 targeted; g9 no_result → 0 evidence).
+- LIVE resolution gold set: 8/8 PASS — metadataHitRate 100%, fullTextResolutionRate 100% (r2 ԵԴ/36723/02/21 got 1 full text this run; captcha-gated metadata otherwise), primaryFullTextRate 100%, fallbackResolutionRate 0%, wrongDocumentRate 0.0%, exactIdentifierAccuracy 100%.
+- LIVE quick ՔԴՕ 179 via /api/search: local-laws SUCCESS (12 results, ~5ms), engine-level behavior identical to the recorded gold (6 evidence, 5 full texts, PRIMARY_VERIFIED — dedup merges article-level local hits into the higher-priority ARLIS act result by design).
+- /api/answer under the still-429-exhausted SDK quota degrades honestly («AI վերլուծությունն այս պահին հասանելի չէ…», evidence preserved) — documented fail-closed behavior; live deep-answer E2E remains pending the quota window.
+
+Stage Summary:
+- LOST_MODULES_RESTORED: local-laws source (3 files) + both QA harness routes, from recorded artifacts.
+- GITIGNORE_HARDENED: bare `local-*`/`test`/`prompt` patterns root-anchored; nested source can never be silently ignored again.
+- ALL_GATES_GREEN: unit 134/134, build PASS, retrieval gold 9/9, resolution gold 8/8 (wrongDocumentRate 0, exactIdentifierAccuracy 100%).
+- KNOWN LIMITATION (unchanged, environmental): z-ai SDK chat quota 429-exhausted; research/answer layers degrade honestly and auto-recover.

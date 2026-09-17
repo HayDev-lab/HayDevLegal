@@ -40,14 +40,19 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-local-*
+# Root-only scratch files. NEVER use a bare `local-*` pattern: it silently
+# ignores nested source dirs (it ate the local-laws adapter once).
+/local-*
+!src/lib/legal-search/local-laws/
 .claude
 .z-ai-config
 *.log
 dev.log
 dev.out.log
-test
-prompt
+# Root-only scratch dirs. NEVER use bare `test`/`prompt` patterns: they match
+# nested paths too (the `test` pattern ate src/app/api/test/ once).
+/test
+/prompt
 
 server.log
 # Skills directory
