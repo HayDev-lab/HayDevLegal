@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { SearchBox } from "@/components/legal/SearchBox";
 import { SearchResults } from "@/components/legal/SearchResults";
 import { AgentAnswer } from "@/components/legal/AgentAnswer";
-import { SearchingState, ErrorState, EmptyState, HomeHero } from "@/components/legal/States";
+import { SearchingState, ErrorState, EmptyState } from "@/components/legal/States";
 import { ThemeToggle } from "@/components/legal/ThemeToggle";
 import { DateSensitivityBanner } from "@/components/legal/DateSensitivityBanner";
 import { SearchInsights } from "@/components/legal/SearchInsights";
@@ -181,7 +181,7 @@ export default function Home() {
 
   return (
     <div
-      className="flex min-h-screen flex-col bg-neutral-50 dark:bg-neutral-950"
+      className="flex min-h-screen flex-col"
       style={{
         backgroundImage: "url(/background.png)",
         backgroundSize: "cover",
@@ -190,86 +190,66 @@ export default function Home() {
         backgroundAttachment: "fixed",
       }}
     >
-      {/* Header */}
-      <header className="sticky top-0 z-30 border-b border-neutral-200/70 bg-white/85 backdrop-blur-md dark:border-neutral-800/70 dark:bg-neutral-950/85">
-        <div className="mx-auto flex h-14 max-w-5xl items-center gap-3 px-4 sm:px-6">
-          <button
-            type="button"
-            onClick={resetHome}
-            className="flex shrink-0 items-center gap-2 text-neutral-900 hover:opacity-80 dark:text-neutral-100"
-            aria-label="Գլխավոր"
-          >
-            <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-neutral-900 text-white dark:bg-white dark:text-neutral-900">
-              <Scale className="h-4 w-4" aria-hidden />
-            </span>
-            <span className="hidden text-sm font-semibold tracking-tight sm:inline dark:text-neutral-100">
-              HayDevLegal
-            </span>
-          </button>
-
-          {/* Phase 5 — top-level tab switch */}
-          <nav className="ml-2 flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => setTopTab("search")}
-              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition ${
-                topTab === "search"
-                  ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
-                  : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-              }`}
-            >
-              <SearchIcon className="h-3.5 w-3.5" />
-              Որոնում
-            </button>
-            <button
-              type="button"
-              onClick={() => setTopTab("workspace")}
-              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition ${
-                topTab === "workspace"
-                  ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
-                  : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-              }`}
-            >
-              <FolderOpen className="h-3.5 w-3.5" />
-              Գործեր
-            </button>
-          </nav>
-
-          {/* Compact search bar (results view) */}
-          {!isHome && (
-            <div className="ml-auto min-w-0 w-full max-w-2xl">
-              <SearchBox
-                initialQuery={query}
-                onSubmit={onSearchBoxSubmit}
-                size="compact"
-                isLoading={view === "searching"}
-                autoFocus={false}
-              />
-            </div>
-          )}
-
-          {/* Theme toggle — always visible */}
-          <div className={isHome ? "ml-auto" : "shrink-0"}>
-            <ThemeToggle />
-          </div>
+      {/* Floating tab bar — no header/logo, sits directly on background */}
+      <nav className="sticky top-0 z-30 flex items-center justify-center gap-2 px-4 pt-3 pb-2">
+        <button
+          type="button"
+          onClick={() => setTopTab("search")}
+          className={`inline-flex items-center gap-2 rounded-full px-5 py-2 text-sm font-semibold backdrop-blur-md transition-all ${
+            topTab === "search"
+              ? "bg-gradient-to-br from-amber-300 via-amber-500 to-amber-700 text-neutral-900 shadow-lg shadow-amber-500/30 border border-amber-400"
+              : "bg-black/40 text-amber-300 border border-amber-600/30 hover:bg-black/60"
+          }`}
+        >
+          <SearchIcon className="h-4 w-4" />
+          Որոնում
+        </button>
+        <button
+          type="button"
+          onClick={() => setTopTab("workspace")}
+          className={`inline-flex items-center gap-2 rounded-full px-5 py-2 text-sm font-semibold backdrop-blur-md transition-all ${
+            topTab === "workspace"
+              ? "bg-gradient-to-br from-amber-300 via-amber-500 to-amber-700 text-neutral-900 shadow-lg shadow-amber-500/30 border border-amber-400"
+              : "bg-black/40 text-amber-300 border border-amber-600/30 hover:bg-black/60"
+          }`}
+        >
+          <FolderOpen className="h-4 w-4" />
+          Գործեր
+        </button>
+        <div className="ml-2">
+          <ThemeToggle />
         </div>
-      </header>
+      </nav>
+
+      {/* Compact search bar (results view) */}
+      {!isHome && topTab === "search" && (
+        <div className="mx-auto w-full max-w-2xl px-4 pb-2">
+          <SearchBox
+            initialQuery={query}
+            onSubmit={onSearchBoxSubmit}
+            size="compact"
+            isLoading={view === "searching"}
+            autoFocus={false}
+          />
+        </div>
+      )}
 
       {/* Main */}
       <main
         className={
           topTab === "workspace"
-            ? "mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8"
+            ? "mx-auto w-full max-w-7xl flex-1 px-4 py-4 sm:px-6"
             : isHome
-              ? "mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center px-4 py-8 sm:px-6"
-              : "mx-auto w-full max-w-3xl flex-1 px-4 py-6 sm:px-6 sm:py-8"
+              ? "mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center px-4 py-8"
+              : "mx-auto w-full max-w-3xl flex-1 px-4 py-6 sm:px-6"
         }
       >
         {topTab === "workspace" ? (
-          <CaseWorkspace />
+          <div className="rounded-2xl bg-black/30 backdrop-blur-md border border-amber-600/20 p-4">
+            <CaseWorkspace />
+          </div>
         ) : isHome ? (
           <div className="flex w-full flex-col items-center gap-5">
-            <HomeHero />
             <div className="w-full max-w-2xl">
               <SearchBox
                 initialQuery={query}
@@ -282,12 +262,12 @@ export default function Home() {
             <FooterLinks />
           </div>
         ) : (
-          <div className="space-y-5">
+          <div className="space-y-5 rounded-2xl bg-black/20 backdrop-blur-sm border border-amber-600/10 p-4">
             {/* Query line + mode toggle */}
             <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                <span className="text-neutral-400 dark:text-neutral-500">Հարցում՝</span>{" "}
-                <span className="font-medium text-neutral-800 dark:text-neutral-100">{query}</span>
+              <p className="text-sm text-amber-400">
+                <span className="text-amber-600">Հարցում՝</span>{" "}
+                <span className="font-medium text-amber-300">{query}</span>
               </p>
               {modeToggle}
             </div>
