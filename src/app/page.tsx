@@ -180,7 +180,16 @@ export default function Home() {
   );
 
   return (
-    <div className="flex min-h-screen flex-col bg-neutral-50 dark:bg-neutral-950">
+    <div
+      className="flex min-h-screen flex-col bg-neutral-50 dark:bg-neutral-950"
+      style={{
+        backgroundImage: "url(/background.png)",
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+        backgroundRepeat: "no-repeat",
+        backgroundAttachment: "fixed",
+      }}
+    >
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-neutral-200/70 bg-white/85 backdrop-blur-md dark:border-neutral-800/70 dark:bg-neutral-950/85">
         <div className="mx-auto flex h-14 max-w-5xl items-center gap-3 px-4 sm:px-6">
