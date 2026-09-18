@@ -57,3 +57,10 @@ dev.out.log
 server.log
 # Skills directory
 /skills/
+
+# Phase 4.1 — sandbox scratch dirs / agent work records (never commit)
+/agent-ctx/
+/tool-results/
+/upload/
+/.zscripts/
+*.pid
