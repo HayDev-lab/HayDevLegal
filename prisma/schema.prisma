@@ -1,8 +1,16 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// src/prisma/schema.prisma
+// HayDevLegal — Prisma schema (SQLite).
+//
+// Phase 3-4.1: legacy User/Post scaffold (preserved — no destructive migration).
+// Phase 5: Case Workspace entities (added non-destructively).
+//
+// All JSON-typed fields use String (SQLite doesn't support native arrays/JSON).
+// The service layer serializes/deserializes via JSON.parse/stringify.
+//
+// Provenance rule (Phase 5 §6): every extracted item (event/fact/claim/entity/
+// evidence link) MUST carry caseId + volumeId? + documentId? + page? + section?
+// + originalFilename + contentHash. Nothing becomes VERIFIED without
+// traceable evidence.
 
 generator client {
   provider = "prisma-client-js"
@@ -12,6 +20,10 @@ datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
 }
+
+// ---------------------------------------------------------------------------
+// Legacy scaffold (preserved — do NOT remove; no destructive migration per §18)
+// ---------------------------------------------------------------------------
 
 model User {
   id        String   @id @default(cuid())
@@ -29,4 +41,354 @@ model Post {
   authorId  String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — Case Workspace
+// ---------------------------------------------------------------------------
+
+// §5 — CaseWorkspace: top-level container. 16+ volumes, 10,000+ pages.
+model CaseWorkspace {
+  id             String   @id @default(cuid())
+  title          String
+  caseNumber     String?
+  jurisdiction   String?
+  court          String?
+  proceedingType String?
+  // CRIMINAL | CIVIL | ADMINISTRATIVE | BANKRUPTCY | CONSTITUTIONAL | ECHR | OTHER
+  caseType       String   @default("OTHER")
+  // ACTIVE | ARCHIVED
+  status         String   @default("ACTIVE")
+  // Denormalized counts for fast UI rendering (kept in sync by service layer).
+  documentCount  Int      @default(0)
+  pageCount      Int      @default(0)
+  // Archive-first delete (§19): archived cases retain data; hard-delete is
+  // a separate explicit operation that cascades to all derived data.
+  archivedAt     DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  volumes       CaseVolume[]
+  documents     CaseDocument[]
+  jobs          CaseJob[]
+  chronology    ChronologyEvent[]
+  entities      CaseEntity[]
+  facts         CaseFact[]
+  evidenceLinks CaseEvidenceLink[]
+  claims        CaseClaim[]
+  contradictions CaseContradiction[]
+  issueLinks    LegalIssueLink[]
+  analysisResults CaseAnalysisResult[]
+
+  @@index([status])
+  @@index([caseType])
+}
+
+// §5 — CaseVolume: ordered container within a case (e.g. Volume 1: Indictment,
+// Volume 2: Search/Seizure protocols, etc.)
+model CaseVolume {
+  id        String   @id @default(cuid())
+  caseId    String
+  number    Int?
+  title     String
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  case      CaseWorkspace @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  documents CaseDocument[]
+
+  @@index([caseId])
+  @@index([caseId, order])
+}
+
+// §5, §6 — CaseDocument: an uploaded file (PDF/DOCX/TXT) within a case.
+// Provenance: originalFilename + sha256 + sizeBytes + mimeType preserved.
+model CaseDocument {
+  id              String   @id @default(cuid())
+  caseId          String
+  volumeId        String?
+  originalFilename String
+  displayName     String
+  // MIME type stored at validation time (§6 — never execute uploaded content).
+  mimeType        String
+  sizeBytes       Int
+  // SHA-256 content hash for dedup (§6 — exact duplicate detection).
+  sha256          String
+  // COURT_DECISION | INDICTMENT | CHARGE_DECISION | SEARCH_PROTOCOL |
+  // SEIZURE_PROTOCOL | INTERROGATION | EXPERT_REPORT | MOTION | APPEAL |
+  // CASSATION_APPEAL | NOTICE | POSTAL_RECORD | CONTRACT | PAYMENT_RECORD |
+  // MEDICAL_RECORD | OFFICIAL_LETTER | EVIDENCE_ATTACHMENT | OTHER | UNKNOWN
+  documentType    String   @default("UNKNOWN")
+  pageCount       Int      @default(0)
+  // UPLOADED | VALIDATING | PARSING | EXTRACTED | ANALYZING | READY | PARTIAL | FAILED
+  processingStatus String  @default("UPLOADED")
+  // §6 — scanned PDF/image with no extractable text → requiresOcr=true;
+  // do NOT hallucinate text or mark extraction successful.
+  requiresOcr     Boolean  @default(false)
+  // §19 — opaque storage key (never expose server filesystem path to UI).
+  storageKey      String
+  // Error detail when processingStatus = FAILED.
+  errorDetail     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  case      CaseWorkspace @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  volume   CaseVolume?   @relation(fields: [volumeId], references: [id], onDelete: SetNull)
+  pages    DocumentPage[]
+
+  @@index([caseId])
+  @@index([caseId, volumeId])
+  @@index([sha256])
+  @@index([processingStatus])
+}
+
+// §6 — DocumentPage: per-page text with explicit page boundaries (§6 —
+// preserve page boundaries for evidence provenance: every fact/claim/evidence
+// item references documentId + pageNumber).
+model DocumentPage {
+  id              String   @id @default(cuid())
+  documentId      String
+  pageNumber      Int
+  originalText    String
+  normalizedText  String?
+  // SUCCESS | EMPTY | REQUIRES_OCR | FAILED
+  extractionStatus String  @default("SUCCESS")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  document CaseDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId, pageNumber])
+}
+
+// §7 — CaseJob: incremental/resumable ingestion + analysis pipeline.
+// Failure at document 37/100 must resume remaining work.
+model CaseJob {
+  id              String   @id @default(cuid())
+  caseId          String
+  // INGEST | CHRONOLOGY | FACTS | EVIDENCE | RESEARCH | CASE_ANALYSIS
+  jobType         String
+  // QUEUED | RUNNING | COMPLETED | PARTIAL | FAILED | CANCELLED
+  status          String   @default("QUEUED")
+  progressCurrent Int      @default(0)
+  progressTotal   Int      @default(0)
+  // Serialized array of documentIds this job covers (for resumability).
+  documentIds     String   @default("[]")
+  errorDetail     String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  case CaseWorkspace @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, jobType])
+  @@index([status])
+}
+
+// §8 — ChronologyEvent: timeline entry with provenance + date verification.
+model ChronologyEvent {
+  id              String   @id @default(cuid())
+  caseId          String
+  // ISO date string when extractable; null when dateStatus=UNKNOWN.
+  date            String?
+  // Original date text as it appears in the source (Armenian/Russian/English).
+  originalDateText String?
+  // EXACT | INFERRED | UNKNOWN
+  dateStatus      String   @default("UNKNOWN")
+  // HEARING | FILING | SEARCH | SEIZURE | INTERROGATION | ARREST | DECISION | OTHER
+  eventType       String   @default("OTHER")
+  title           String
+  description     String?
+  // JSON-serialized string array: ["Judge X", "Prosecutor Y"]
+  participants    String   @default("[]")
+  // JSON-serialized EvidenceRef[]: [{ documentId, page, quote }]
+  evidenceRefs    String   @default("[]")
+  // DOCUMENT_VERIFIED | USER_ALLEGED | DISPUTED
+  verification    String   @default("USER_ALLEGED")
+  // Conflict marker — when multiple documents reference the same event but
+  // disagree on date/details, this flag is set (§8 — don't silently choose).
+  hasConflict     Boolean  @default(false)
+  conflictDetail  String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  case CaseWorkspace @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, date])
+  @@index([caseId, eventType])
+}
+
+// §9 — CaseEntity: people/organizations with canonical name + aliases.
+model CaseEntity {
+  id            String   @id @default(cuid())
+  caseId        String
+  canonicalName String
+  // JSON-serialized string array of aliases.
+  aliases       String   @default("[]")
+  // PERSON | COMPANY | COURT | INVESTIGATOR | PROSECUTOR | LAWYER | EXPERT |
+  // GOVERNMENT_BODY | PENITENTIARY | OTHER
+  type          String   @default("OTHER")
+  // JSON-serialized string array of roles.
+  roles         String   @default("[]")
+  // JSON-serialized EvidenceRef[] — every entity has traceable evidence.
+  evidenceRefs  String   @default("[]")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  case CaseWorkspace @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, type])
+}
+
+// §10 — CaseFact: fact matrix entry with status + supporting/contradicting evidence.
+model CaseFact {
+  id                  String   @id @default(cuid())
+  caseId              String
+  proposition         String
+  category            String   @default("OTHER")
+  // VERIFIED | ALLEGED | DISPUTED | CONTRADICTED | UNKNOWN
+  status              String   @default("ALLEGED")
+  // JSON-serialized EvidenceRef[] — facts supporting this proposition.
+  supportingEvidence  String   @default("[]")
+  // JSON-serialized EvidenceRef[] — facts/evidence contradicting.
+  contradictingEvidence String @default("[]")
+  // JSON-serialized string[] of LegalIssueLink ids.
+  relatedIssues       String   @default("[]")
+  // HIGH | MEDIUM | LOW
+  materiality         String   @default("MEDIUM")
+  // Whether this fact was user-entered (begins as ALLEGED per §10) or AI-proposed.
+  source              String   @default("USER")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  case CaseWorkspace @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  evidenceLinks CaseEvidenceLink[]
+
+  @@index([caseId, status])
+  @@index([caseId, materiality])
+}
+
+// §11 — CaseEvidenceLink: persisted FACT ↔ EVIDENCE links.
+model CaseEvidenceLink {
+  id           String   @id @default(cuid())
+  caseId       String
+  factId       String?
+  // JSON-serialized EvidenceRef: { documentId, page?, section?, quote? }
+  evidenceRef  String
+  // SUPPORTS | CONTRADICTS | CONTEXT | AUTHENTICATES
+  relation     String   @default("SUPPORTS")
+  // DIRECT | INDIRECT | CONTEXTUAL
+  strength     String   @default("DIRECT")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  case  CaseWorkspace @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  fact  CaseFact?     @relation(fields: [factId], references: [id], onDelete: SetNull)
+
+  @@index([caseId])
+  @@index([factId])
+  @@index([relation])
+}
+
+// §12 — CaseClaim: separate defendant/prosecution/government/witness/expert/
+// lower-court claims from court findings. Never treat party submission as
+// court holding.
+model CaseClaim {
+  id           String   @id @default(cuid())
+  caseId       String
+  // DEFENDANT | APPLICANT | PROSECUTION | GOVERNMENT | WITNESS | EXPERT |
+  // LOWER_COURT | COURT_FINDING | OTHER
+  claimType    String
+  proposition  String
+  // JSON-serialized EvidenceRef: source document/page
+  source       String
+  status       String   @default("OPEN")
+  // JSON-serialized EvidenceRef[]
+  evidenceRefs String   @default("[]")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  case CaseWorkspace @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, claimType])
+}
+
+// §12 — CaseContradiction: detected contradictions between claims/evidence.
+model CaseContradiction {
+  id                String   @id @default(cuid())
+  caseId            String
+  // DIRECT | TEMPORAL | IDENTITY | PROCEDURAL | APPARENT
+  contradictionType String   @default("APPARENT")
+  // HIGH | MEDIUM | LOW
+  significance      String   @default("MEDIUM")
+  // OPEN | EXPLAINED | RESOLVED
+  status            String   @default("OPEN")
+  // JSON-serialized { claimId?, proposition, source } for side A.
+  claimA            String
+  // JSON-serialized { claimId?, proposition, source } for side B.
+  claimB            String
+  reason            String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  case CaseWorkspace @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, status])
+  @@index([caseId, significance])
+}
+
+// §13 — LegalIssueLink: bridges Case Workspace facts/evidence with Phase 4
+// LegalIssue + federated search results (ARLIS/Cassation/ConCourt/HUDOC).
+model LegalIssueLink {
+  id               String   @id @default(cuid())
+  caseId           String
+  // Links to an in-case LegalIssue (Phase 4 type) — stored as JSON since
+  // Phase 4 issues are not Prisma-persisted.
+  issueId          String
+  issueStatement   String
+  // JSON-serialized string[] of CaseFact ids.
+  factIds          String   @default("[]")
+  // JSON-serialized EvidenceRef[].
+  evidenceRefs     String   @default("[]")
+  // JSON-serialized { source, citation, url, date?, passages[] }[] for
+  // applicable laws found via HayDevLegal federated search.
+  relatedLaw       String   @default("[]")
+  // JSON-serialized { source, citation, url, date?, passages[], applicability }[]
+  // for Cassation/ConCourt/HUDOC precedents.
+  relatedPrecedents String  @default("[]")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  case CaseWorkspace @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+}
+
+// §14, §15 — CaseAnalysisResult: bounded closed CaseAnalysisPack + Codex output.
+model CaseAnalysisResult {
+  id              String   @id @default(cuid())
+  caseId          String
+  requestId       String
+  // JSON-serialized CaseAnalysisPack (bounded — never all case pages).
+  pack            String
+  // JSON-serialized CodexCaseAnalysis (when Codex available) or deterministic
+  // analysis output (when Codex unavailable).
+  analysis        String?
+  // Schema version for stale-result detection (§18).
+  analysisVersion String   @default("1.0")
+  // COMPLETED | PARTIAL | BLOCKED_EXTERNAL_QUOTA | FAILED
+  status          String   @default("PARTIAL")
+  // Provider that produced the analysis (codex-cli | codex-sdk | ollama-cloud |
+  // zai | deterministic).
+  provider        String?
+  errorDetail     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  case CaseWorkspace @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, status])
+  @@index([caseId, requestId])
 }

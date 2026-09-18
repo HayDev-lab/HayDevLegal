@@ -22,7 +22,8 @@ import type {
   SearchWarning,
 } from "@/lib/legal-search/types";
 import type { ResearchReport } from "@/lib/legal-research/types";
-import { Scale } from "lucide-react";
+import { Scale, FolderOpen, Search as SearchIcon } from "lucide-react";
+import { CaseWorkspace } from "@/components/case-workspace/CaseWorkspace";
 
 type View = "home" | "searching" | "results" | "error" | "empty";
 
@@ -39,6 +40,8 @@ export default function Home() {
   const [retrievalMs, setRetrievalMs] = useState<number | undefined>();
   const [confirmTarget, setConfirmTarget] = useState<LegalSource | null>(null);
   const searchNonce = useRef(0);
+  // Phase 5 — top-level tab: switch between Legal Search (Phase 3-4.1) and Case Workspace (Phase 5).
+  const [topTab, setTopTab] = useState<"search" | "workspace">("search");
 
   // Hydrate from URL ?q= & mode= on first load.
   useEffect(() => {
@@ -191,9 +194,37 @@ export default function Home() {
               <Scale className="h-4 w-4" aria-hidden />
             </span>
             <span className="hidden text-sm font-semibold tracking-tight sm:inline dark:text-neutral-100">
-              Իրավական որոնում
+              HayDevLegal
             </span>
           </button>
+
+          {/* Phase 5 — top-level tab switch */}
+          <nav className="ml-2 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setTopTab("search")}
+              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                topTab === "search"
+                  ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
+                  : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              }`}
+            >
+              <SearchIcon className="h-3.5 w-3.5" />
+              Որոնում
+            </button>
+            <button
+              type="button"
+              onClick={() => setTopTab("workspace")}
+              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                topTab === "workspace"
+                  ? "bg-neutral-900 text-white dark:bg-white dark:text-neutral-900"
+                  : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              }`}
+            >
+              <FolderOpen className="h-3.5 w-3.5" />
+              Գործեր
+            </button>
+          </nav>
 
           {/* Compact search bar (results view) */}
           {!isHome && (
@@ -218,12 +249,16 @@ export default function Home() {
       {/* Main */}
       <main
         className={
-          isHome
-            ? "mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center px-4 py-8 sm:px-6"
-            : "mx-auto w-full max-w-3xl flex-1 px-4 py-6 sm:px-6 sm:py-8"
+          topTab === "workspace"
+            ? "mx-auto w-full max-w-7xl flex-1 px-4 py-6 sm:px-6 sm:py-8"
+            : isHome
+              ? "mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center px-4 py-8 sm:px-6"
+              : "mx-auto w-full max-w-3xl flex-1 px-4 py-6 sm:px-6 sm:py-8"
         }
       >
-        {isHome ? (
+        {topTab === "workspace" ? (
+          <CaseWorkspace />
+        ) : isHome ? (
           <div className="flex w-full flex-col items-center gap-5">
             <HomeHero />
             <div className="w-full max-w-2xl">
