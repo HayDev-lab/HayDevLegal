@@ -356,40 +356,40 @@ export default function Home() {
         )}
       </main>
 
-      {/* Footer (sticky to bottom per UI rules) */}
-      <footer className="mt-auto border-t border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-950">
-        <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-2 px-4 py-6 text-xs text-neutral-500 dark:text-neutral-400 sm:flex-row sm:px-6 sm:py-5">
+      {/* Footer — black bg, golden text */}
+      <footer className="mt-auto bg-black">
+        <div className="mx-auto flex max-w-5xl flex-col items-center justify-between gap-2 px-4 py-6 text-xs sm:flex-row sm:px-6 sm:py-5">
           <div className="flex items-center gap-1.5">
-            <Scale className="h-3.5 w-3.5 text-neutral-400 dark:text-neutral-500" aria-hidden />
-            <span>Աղբյուրներ՝ </span>
+            <Scale className="h-3.5 w-3.5 text-amber-400" aria-hidden />
+            <span className="text-amber-400">Աղբյուրներ՝ </span>
             <a
               href="https://arlis.am"
               target="_blank"
               rel="noopener noreferrer"
-              className="font-medium text-neutral-700 hover:text-neutral-900 hover:underline dark:text-neutral-300 dark:hover:text-neutral-100"
+              className="font-medium text-amber-400 hover:text-amber-300 hover:underline"
             >
               ARLIS.am
             </a>
-            <span aria-hidden>·</span>
+            <span aria-hidden className="text-amber-500">·</span>
             <a
               href="https://datalex.am"
               target="_blank"
               rel="noopener noreferrer"
-              className="font-medium text-neutral-700 hover:text-neutral-900 hover:underline dark:text-neutral-300 dark:hover:text-neutral-100"
+              className="font-medium text-amber-400 hover:text-amber-300 hover:underline"
             >
               Datalex.am
             </a>
-            <span aria-hidden>·</span>
+            <span aria-hidden className="text-amber-500">·</span>
             <a
               href="https://concourt.am"
               target="_blank"
               rel="noopener noreferrer"
-              className="font-medium text-neutral-700 hover:text-neutral-900 hover:underline dark:text-neutral-300 dark:hover:text-neutral-100"
+              className="font-medium text-amber-400 hover:text-amber-300 hover:underline"
             >
               Concourt.am
             </a>
           </div>
-          <p className="text-center text-neutral-500 dark:text-neutral-400 sm:text-right">
+          <p className="text-center text-amber-500 sm:text-right">
             Սույն կայքը հանդիսանում է որոնողական գործիք և չի փոխարինում իրավական խորհրդատվությանը։
           </p>
         </div>
@@ -409,13 +409,5 @@ export default function Home() {
 }
 
 function FooterLinks() {
-  return (
-    <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-neutral-400 dark:text-neutral-500">
-      <span>Աղբյուրներ՝ ARLIS · Datalex · Սահմանադրական դատարան</span>
-      <span aria-hidden>·</span>
-      <span>AI վերլուծություն՝ ստուգելի հղումներով</span>
-      <span aria-hidden>·</span>
-      <span>Չի փոխարինում իրավական խորհրդատվությանը</span>
-    </div>
-  );
+  return null;
 }

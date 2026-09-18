@@ -277,3 +277,105 @@
     @apply border-l-2 border-border pl-3 italic text-muted-foreground my-2;
   }
 }
+
+/* ===========================================================================
+   GOLD LUXURY THEME — 3D Golden Glass Buttons + Golden Text
+   =========================================================================== */
+
+/* All text default golden */
+:root {
+  --gold-light: #FFD700;
+  --gold: #D4AF37;
+  --gold-dark: #B8860B;
+  --gold-glow: rgba(212, 175, 55, 0.4);
+}
+
+/* Golden text for headers and important labels */
+h1, h2, h3, h4, h5, h6 {
+  color: var(--gold) !important;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* 3D Golden Glass Button effect for ALL buttons */
+button,
+a[class*="button"],
+[class*="rounded"] > button,
+input[type="submit"],
+input[type="button"] {
+  background: linear-gradient(135deg, var(--gold-light) 0%, var(--gold) 50%, var(--gold-dark) 100%) !important;
+  color: #1a1a1a !important;
+  border: 1px solid var(--gold-dark) !important;
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.3),
+    inset 0 1px 1px rgba(255, 255, 255, 0.5),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.15),
+    0 0 12px var(--gold-glow) !important;
+  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.3) !important;
+  font-weight: 600 !important;
+  transition: all 0.2s ease !important;
+  backdrop-filter: blur(4px) !important;
+  -webkit-backdrop-filter: blur(4px) !important;
+}
+
+button:hover,
+a[class*="button"]:hover,
+input[type="submit"]:hover,
+input[type="button"]:hover {
+  background: linear-gradient(135deg, #FFE55C 0%, var(--gold-light) 50%, var(--gold) 100%) !important;
+  box-shadow:
+    0 3px 6px rgba(0, 0, 0, 0.4),
+    inset 0 1px 2px rgba(255, 255, 255, 0.6),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.15),
+    0 0 20px var(--gold-glow) !important;
+  transform: translateY(-1px) !important;
+}
+
+button:active,
+a[class*="button"]:active,
+input[type="submit"]:active,
+input[type="button"]:active {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.3),
+    inset 0 1px 2px rgba(0, 0, 0, 0.2) !important;
+  transform: translateY(0) !important;
+}
+
+/* Links in footer golden */
+footer a {
+  color: var(--gold-light) !important;
+  text-decoration: none !important;
+}
+
+footer a:hover {
+  color: #FFE55C !important;
+  text-decoration: underline !important;
+}
+
+/* Search box golden border */
+input[type="text"],
+input[type="search"],
+textarea {
+  border-color: var(--gold-dark) !important;
+  color: #1a1a1a !important;
+}
+
+/* Tabs golden active state */
+[class*="border-neutral-900"]:not([class*="border-t"]):not([class*="border-b-"]) {
+  border-color: var(--gold) !important;
+}
+
+/* Dark mode adjustments */
+.dark button,
+.dark a[class*="button"] {
+  background: linear-gradient(135deg, var(--gold-light) 0%, var(--gold) 50%, var(--gold-dark) 100%) !important;
+  color: #0a0a0a !important;
+}
+
+.dark h1, .dark h2, .dark h3, .dark h4, .dark h5, .dark h6 {
+  color: var(--gold-light) !important;
+}
+
+/* Badge golden override */
+[class*="rounded-full"] {
+  border-color: var(--gold-dark) !important;
+}
