@@ -8,9 +8,15 @@
 // sandbox but never committed (the old .gitignore `test` pattern matched
 // src/app/api/test/). Rebuilt from the recorded resolution-gold outputs
 // (8/8 PASS, fullTextResolutionRate 87.5%, wrongDocumentRate 0.0%).
+//
+// Phase 4.1 §9-§10 — wrapped with `withQaGuard`: the route is hidden (404)
+// in production unless LEGAL_QA_ENABLED is set AND a valid
+// `Authorization: Bearer <LEGAL_QA_TOKEN>` header is supplied.
 
-import { NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
 import { federatedSearch } from "@/lib/legal-search/engine/search-engine";
+import { withQaGuard } from "@/lib/legal-search/security/qa-guard";
+import { rateLimit } from "@/lib/legal-search/security/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 800;
@@ -105,7 +111,19 @@ function normalizeCaseNumber(v: string): string {
   return v.toUpperCase().replace(/\s+/g, "");
 }
 
-export async function GET() {
+export const GET = withQaGuard(async (req: NextRequest) => {
+  // §12 — QA rate-limit category (strictest bucket).
+  const rl = await rateLimit("qa")(req);
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: "rate limited", retryAfterMs: rl.retryAfterMs },
+      {
+        status: rl.status,
+        headers: { "retry-after": String(Math.ceil(rl.retryAfterMs / 1000)) },
+      },
+    );
+  }
+
   const generatedAt = new Date().toISOString();
   const results: Array<Record<string, unknown>> = [];
   let wrongDocumentsTotal = 0;
@@ -221,4 +239,4 @@ export async function GET() {
     },
     results,
   });
-}
+});

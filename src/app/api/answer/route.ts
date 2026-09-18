@@ -1,5 +1,5 @@
 // src/app/api/answer/route.ts
-// Streaming legal-answer endpoint (v2 — evidence-pack grounded).
+// Streaming legal-answer endpoint (v3 — Phase 4.1 AiRuntime-grounded).
 //
 // POST /api/answer
 //   { query: string,
@@ -8,8 +8,20 @@
 //     dateContext?: { date, wantsHistorical, wantsCurrent },
 //     warnings?: string[] }                         // search warnings to reflect
 // -> text/event-stream of AnswerChunk:
+//      data: {"type":"metadata","analysisStatus":"...","stageTrace":[...]}
 //      data: {"type":"delta","text":"..."}
 //      data: {"type":"done","requestId":"...","citations":[...]}
+//
+// Phase 4.1 §59-§62: every AI call now flows through the unified AiRuntime
+// (src/lib/ai-runtime). On any non-SUCCESS runtime status (RATE_LIMITED /
+// TIMEOUT / UNAVAILABLE / INVALID_SCHEMA / ERROR), the endpoint:
+//   - DOES NOT hang (§62 — no infinite spinner; the stream terminates with
+//     a metadata chunk + error chunk + close);
+//   - DOES NOT lose retrieval / research / applicability / argument map /
+//     source cards (§61 — those are kept by the client because they live
+//     in the page, not in this endpoint's response — and the metadata chunk
+//     surfaces `analysisStatus` so the UI shows the TotalAiFailureBanner
+//     ABOVE the deterministic research).
 //
 // HALLUCINATION FIREWALL (spec §21):
 //   - the AI may cite ONLY [E1]..[En] evidence ids;
@@ -21,13 +33,15 @@
 
 import { NextRequest } from "next/server";
 import { randomUUID } from "node:crypto";
-import ZAI from "z-ai-web-dev-sdk";
+import { getAiRuntime } from "@/lib/ai-runtime";
+import type { AiResult, AiTaskType, AiRuntimeContext } from "@/lib/ai-runtime/types";
 import type { LegalEvidence } from "@/lib/legal-search/types";
 import type { ResearchReport } from "@/lib/legal-research/types";
 import { renderResearchDossier } from "@/lib/legal-research/synthesis/legal-synthesis";
 import { verifyPropositions } from "@/lib/legal-research/verification/proposition-verifier";
 import type { LegalSource, CitationRef, AnswerChunk } from "@/lib/legal/types";
 import { checkUrlSafe } from "@/lib/legal-search/security/url-policy";
+import { rateLimit } from "@/lib/legal-search/security/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,6 +50,30 @@ export const maxDuration = 120;
 const MAX_EVIDENCE = 8;
 const MAX_EVIDENCE_TEXT = 3200;
 const MAX_QUERY_LEN = 400;
+
+// ---------------------------------------------------------------------------
+// Phase 4.1 §21 / §72 — analysis status + stage trace
+// ---------------------------------------------------------------------------
+
+export type AnalysisStatus = "COMPLETE" | "PARTIAL_AI_UNAVAILABLE" | "DETERMINISTIC_ONLY";
+
+export interface StageTraceEntry {
+  stage:
+    | "query-understanding"
+    | "holding-extraction"
+    | "material-fact-extraction"
+    | "case-analysis"
+    | "argument-map"
+    | "synthesis";
+  provider?: string;
+  status: string;
+  latencyMs: number;
+  note?: string;
+}
+
+/** Armenian UI message for total AI failure (§98). */
+export const AI_UNAVAILABLE_MESSAGE =
+  "Խորքային AI վերլուծությունը ժամանակավորապես հասանելի չէ։ Ստուգված աղբյուրները և կառուցվածքային վերլուծությունը պահպանված են։";
 
 const SYSTEM_PROMPT = `Դու Հայաստանի իրավական տեղեկատվության վերլուծական օգնական ես։
 Քո առաջնային խնդիրը տրամադրված ԱՊԱՑՈՒՅՑՆԵՐԻ ՀԱՎԱՔԾՈՒԻ (evidence pack) հիման վրա օգտատիրոջ հարցին իրավական պատասխան տալն է։
@@ -360,7 +398,71 @@ function buildCitations(finalText: string, evidence: LegalEvidence[]): CitationR
     }));
 }
 
+// ---------------------------------------------------------------------------
+// §72 — stage trace accumulator (one entry per AI stage attempted)
+// ---------------------------------------------------------------------------
+
+function newStageTrace(): StageTraceEntry[] {
+  return [];
+}
+
+function recordStage(
+  trace: StageTraceEntry[],
+  stage: StageTraceEntry["stage"],
+  status: string,
+  startedAt: number,
+  provider?: string,
+  note?: string,
+): void {
+  trace.push({
+    stage,
+    provider,
+    status,
+    latencyMs: Math.max(0, Date.now() - startedAt),
+    note,
+  });
+}
+
+/** Classify the overall analysisStatus from the accumulated stage trace. */
+function classifyAnalysisStatus(trace: StageTraceEntry[]): AnalysisStatus {
+  if (trace.length === 0) return "DETERMINISTIC_ONLY";
+  const failureStatuses = new Set([
+    "RATE_LIMITED",
+    "TIMEOUT",
+    "UNAVAILABLE",
+    "INVALID_SCHEMA",
+    "ERROR",
+    "DETERMINISTIC_ONLY",
+  ]);
+  const anySuccess = trace.some((s) => s.status === "SUCCESS" || s.status === "SUCCESS_EMPTY");
+  const anyFailure = trace.some((s) => failureStatuses.has(s.status));
+  if (!anySuccess && anyFailure) return "DETERMINISTIC_ONLY";
+  if (anySuccess && anyFailure) return "PARTIAL_AI_UNAVAILABLE";
+  if (anySuccess && !anyFailure) return "COMPLETE";
+  // Only failures, no successes.
+  return "DETERMINISTIC_ONLY";
+}
+
 export async function POST(req: NextRequest) {
+  // Phase 4.1 §11-§12 — application-level per-IP rate limit (answer category,
+  // 20/min default). Answer streams are expensive; the limit fires BEFORE
+  // body parsing so limited clients cannot spend body-parsing work. The rest
+  // of the answer logic (LLM, hallucination firewall, citations) is owned by
+  // the AI-runtime integration agent and is intentionally untouched here.
+  const rl = await rateLimit("answer")(req);
+  if (!rl.ok) {
+    return new Response(
+      JSON.stringify({ error: "Չափազանց շատ հարցում։ Փորձեք ավելի ուշ։", retryAfterMs: rl.retryAfterMs }),
+      {
+        status: rl.status,
+        headers: {
+          "content-type": "application/json",
+          "retry-after": String(Math.ceil(rl.retryAfterMs / 1000)),
+        },
+      },
+    );
+  }
+
   const requestId = randomUUID();
   let body: {
     query?: unknown;
@@ -434,7 +536,7 @@ export async function POST(req: NextRequest) {
 
   // ---- SSE stream -----------------------------------------------------------
   const encoder = new TextEncoder();
-  let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  const stageTrace = newStageTrace();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
@@ -456,8 +558,31 @@ export async function POST(req: NextRequest) {
         }
       };
 
+      // Surface the analysis status + stage trace as the FIRST event so the
+      // UI can show the TotalAiFailureBanner immediately if AI is down.
+      // (§97 — banner placement ABOVE deterministic research is the UI's job.)
+      const sendMetadata = (analysisStatus: AnalysisStatus, aiStatus?: "AI_UNAVAILABLE") => {
+        send({
+          type: "metadata",
+          analysisStatus,
+          aiStatus,
+          stageTrace: stageTrace.slice(),
+          // Keep the deterministic research/evidence payload references in the
+          // metadata so a future UI can re-render them above the banner
+          // (§61 — never lose retrieval/research/applicability/argument map).
+          evidenceCount: evidence.length,
+          hasResearch: !!research,
+          researchStages: research?.stages?.map((s) => ({
+            stage: s.stage,
+            status: s.status,
+            durationMs: s.durationMs,
+          })),
+          message: aiStatus === "AI_UNAVAILABLE" ? AI_UNAVAILABLE_MESSAGE : undefined,
+        });
+      };
+
       try {
-        const zai = await ZAI.create();
+        const runtime = getAiRuntime();
         const userPrompt = buildUserPrompt(query, evidence, history.length > 0, dateContext, warnings, research);
 
         const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
@@ -466,134 +591,146 @@ export async function POST(req: NextRequest) {
         for (const h of history) messages.push({ role: h.role, content: h.content });
         messages.push({ role: "user", content: userPrompt });
 
-        let full = "";
-        let streamBody: ReadableStream<Uint8Array> | null = null;
+        // §60 — route the final-answer call through the unified runtime.
+        const taskType: AiTaskType = isDeep ? "DEEP_CASE_SYNTHESIS" : "FINAL_ANSWER";
+        const ctx: AiRuntimeContext = {
+          deadlineAt: Date.now() + 110_000, // bounded by maxDuration
+          label: isDeep ? "final-answer-deep" : "final-answer",
+        };
+
+        const startedAt = Date.now();
+        let result: AiResult<string>;
         try {
-          const streamReq = {
-            messages,
-            stream: true,
-            thinking: { type: "disabled" },
-            max_tokens: 1400,
-          } as unknown as Parameters<typeof zai.chat.completions.create>[0];
-          streamBody = (await zai.chat.completions.create(streamReq)) as unknown as ReadableStream<Uint8Array>;
+          result = await runtime.generateText(
+            {
+              messages,
+              maxTokens: 1400,
+              temperature: 0.2,
+              timeoutMs: 90_000,
+            },
+            taskType,
+            ctx,
+          );
         } catch (err) {
-          console.error("[/api/answer] stream create failed, fallback:", err);
-          const resp = (await zai.chat.completions.create({
-            messages,
-            stream: false,
-            thinking: { type: "disabled" },
-            max_tokens: 1400,
-          })) as { choices?: Array<{ message?: { content?: string } }> };
-          const text = sanitizeChunk(resp.choices?.[0]?.message?.content ?? "", validIds);
-          for (const piece of chunkText(text)) send({ type: "delta", text: piece });
-          full = text;
-          streamBody = null;
-        }
-
-        if (streamBody) {
-          const reader = streamBody.getReader();
-          upstreamReader = reader;
-          const decoder = new TextDecoder();
-          let buffer = "";
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const frames = buffer.split("\n\n");
-            buffer = frames.pop() ?? "";
-            for (const frame of frames) {
-              const line = frame.trim();
-              if (!line.startsWith("data:")) continue;
-              const payload = line.slice(5).trim();
-              if (payload === "[DONE]") continue;
-              let delta = "";
-              try {
-                const obj = JSON.parse(payload);
-                delta =
-                  obj?.choices?.[0]?.delta?.content ??
-                  obj?.choices?.[0]?.message?.content ??
-                  obj?.delta ??
-                  "";
-              } catch {
-                delta = payload;
-              }
-              if (typeof delta === "string" && delta.length > 0) {
-                const sanitized = sanitizeChunk(delta, validIds);
-                if (sanitized) {
-                  full += sanitized;
-                  send({ type: "delta", text: sanitized });
-                }
-              }
-            }
-          }
-          if (buffer.trim().startsWith("data:")) {
-            const payload = buffer.trim().slice(5).trim();
-            if (payload && payload !== "[DONE]") {
-              try {
-                const obj = JSON.parse(payload);
-                const delta = obj?.choices?.[0]?.delta?.content ?? "";
-                if (typeof delta === "string" && delta) {
-                  const sanitized = sanitizeChunk(delta, validIds);
-                  if (sanitized) {
-                    full += sanitized;
-                    send({ type: "delta", text: sanitized });
-                  }
-                }
-              } catch {
-                const sanitized = sanitizeChunk(payload, validIds);
-                if (sanitized) {
-                  full += sanitized;
-                  send({ type: "delta", text: sanitized });
-                }
-              }
-            }
-          }
-        }
-
-        // Final correctness pass: factual anchor verification.
-        let verified = verifyFactualAnchors(full, evidence);
-        // Phase 4 §50-§54 — proposition verification against the research
-        // layer: applicability language, paragraph fabrication, metadata-only
-        // holding claims.
-        if (research) {
-          const prop = verifyPropositions(verified, {
-            evidence,
-            applicability: research.applicability,
-            holdings: research.holdings,
+          // The runtime itself threw (shouldn't happen normally) — record
+          // as ERROR and surface the deterministic payload.
+          recordStage(stageTrace, "synthesis", "ERROR", startedAt, undefined, err instanceof Error ? err.message : String(err));
+          sendMetadata(classifyAnalysisStatus(stageTrace), "AI_UNAVAILABLE");
+          send({
+            type: "error",
+            message: AI_UNAVAILABLE_MESSAGE,
+            requestId,
           });
-          verified = prop.text;
-        }
-        if (verified !== full) {
-          // Send a correction marker so the UI re-renders the cleaned text.
-          send({ type: "replace", text: verified });
-          full = verified;
+          close();
+          return;
         }
 
-        const citations = buildCitations(full, evidence);
-        const doneChunk: AnswerChunk = { type: "done", requestId, citations };
-        send(doneChunk);
+        // Map the runtime result to behavior.
+        switch (result.status) {
+          case "SUCCESS": {
+            recordStage(stageTrace, "synthesis", "SUCCESS", startedAt, result.provider);
+            const raw = result.value ?? "";
+            const sanitizedInitial = sanitizeChunk(raw, validIds);
+            // Send the answer in chunks (§60 — if provider doesn't stream,
+            // we chunk the full response so the UI sees progressive typing).
+            for (const piece of chunkText(sanitizedInitial)) {
+              send({ type: "delta", text: piece });
+            }
+            let full = sanitizedInitial;
+
+            // Final correctness pass: factual anchor verification.
+            let verified = verifyFactualAnchors(full, evidence);
+            // Phase 4 §50-§54 — proposition verification against the research
+            // layer: applicability language, paragraph fabrication,
+            // metadata-only holding claims.
+            if (research) {
+              const prop = verifyPropositions(verified, {
+                evidence,
+                applicability: research.applicability,
+                holdings: research.holdings,
+              });
+              verified = prop.text;
+            }
+            if (verified !== full) {
+              send({ type: "replace", text: verified });
+              full = verified;
+            }
+
+            const citations = buildCitations(full, evidence);
+            // §21 / §72 — send the metadata chunk BEFORE done so the UI
+            // knows the analysis was COMPLETE.
+            sendMetadata("COMPLETE");
+            const doneChunk: AnswerChunk = { type: "done", requestId, citations };
+            send(doneChunk);
+            close();
+            return;
+          }
+          case "SUCCESS_EMPTY": {
+            // The provider returned no answer (empty completion).
+            recordStage(stageTrace, "synthesis", "SUCCESS_EMPTY", startedAt, result.provider);
+            sendMetadata("COMPLETE");
+            send({
+              type: "done",
+              requestId,
+              citations: [],
+            });
+            close();
+            return;
+          }
+          case "RATE_LIMITED":
+          case "TIMEOUT":
+          case "UNAVAILABLE":
+          case "INVALID_SCHEMA":
+          case "ERROR": {
+            // §61 — DO NOT lose retrieval / research / applicability / argument
+            // map / source cards. The deterministic research payload lives
+            // in the page (the client already has it); we surface the
+            // analysis status + Armenian message via the metadata chunk.
+            recordStage(
+              stageTrace,
+              "synthesis",
+              result.status,
+              startedAt,
+              result.provider,
+              "detail" in result && result.detail ? result.detail : undefined,
+            );
+            sendMetadata(classifyAnalysisStatus(stageTrace), "AI_UNAVAILABLE");
+            send({
+              type: "error",
+              message: AI_UNAVAILABLE_MESSAGE,
+              requestId,
+            });
+            close();
+            return;
+          }
+          default: {
+            const _exhaustive: never = result;
+            void _exhaustive;
+            recordStage(stageTrace, "synthesis", "ERROR", startedAt, undefined, "unhandled status");
+            sendMetadata("DETERMINISTIC_ONLY", "AI_UNAVAILABLE");
+            send({
+              type: "error",
+              message: AI_UNAVAILABLE_MESSAGE,
+              requestId,
+            });
+            close();
+            return;
+          }
+        }
       } catch (err) {
         console.error("[/api/answer] fatal:", err);
+        // §62 — NO infinite spinner. Always close the stream.
+        sendMetadata("DETERMINISTIC_ONLY", "AI_UNAVAILABLE");
         send({
           type: "error",
-          message: "AI վերլուծությունն այս պահին հասանելի չէ։ Ապացույցները մնում են հասանելի։",
+          message: AI_UNAVAILABLE_MESSAGE,
           requestId,
         });
-      } finally {
         close();
-        if (upstreamReader) {
-          try {
-            await upstreamReader.cancel();
-          } catch {
-            // ignore
-          }
-        }
       }
     },
     cancel() {
-      if (upstreamReader) {
-        upstreamReader.cancel().catch(() => {});
-      }
+      // best-effort: the runtime should observe the AbortSignal in ctx.
     },
   });
 
@@ -627,7 +764,8 @@ export async function GET() {
         warnings: "string[] (optional, search warnings)",
         research: "ResearchReport (optional, Phase 4 deep analysis)",
       },
-      response: "text/event-stream of AnswerChunk",
+      response: "text/event-stream of AnswerChunk (delta/replace/done/error/metadata)",
+      phase: "4.1 — AiRuntime-grounded",
     }),
     { headers: { "content-type": "application/json" } },
   );

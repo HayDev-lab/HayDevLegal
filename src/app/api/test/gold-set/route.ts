@@ -8,10 +8,16 @@
 // Restored note: this route existed in the sandbox where it was created but
 // was silently never committed (the old .gitignore `test` pattern matched
 // src/app/api/test/). Rebuilt from the recorded gold-set outputs.
+//
+// Phase 4.1 §9-§10 — wrapped with `withQaGuard`: the route is hidden (404)
+// in production unless LEGAL_QA_ENABLED is set AND a valid
+// `Authorization: Bearer <LEGAL_QA_TOKEN>` header is supplied.
 
-import { NextResponse } from "next/server";
+import { NextResponse, NextRequest } from "next/server";
 import { federatedSearch } from "@/lib/legal-search/engine/search-engine";
 import type { SearchMode } from "@/lib/legal-search/types";
+import { withQaGuard } from "@/lib/legal-search/security/qa-guard";
+import { rateLimit } from "@/lib/legal-search/security/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 800;
@@ -98,7 +104,21 @@ const GOLD: GoldItem[] = [
   },
 ];
 
-export async function GET() {
+export const GET = withQaGuard(async (req: NextRequest) => {
+  // §12 — QA rate-limit category (strictest bucket). Inside the guard so
+  // the limit only fires for callers who already passed the QA gate; the
+  // 404 path stays free of rate-limit work.
+  const rl = await rateLimit("qa")(req);
+  if (!rl.ok) {
+    return NextResponse.json(
+      { error: "rate limited", retryAfterMs: rl.retryAfterMs },
+      {
+        status: rl.status,
+        headers: { "retry-after": String(Math.ceil(rl.retryAfterMs / 1000)) },
+      },
+    );
+  }
+
   const generatedAt = new Date().toISOString();
   const availability: Record<string, { success: number; total: number }> = {};
   const results: Array<Record<string, unknown>> = [];
@@ -185,4 +205,4 @@ export async function GET() {
     sourceAvailability: availability,
     results,
   });
-}
+});

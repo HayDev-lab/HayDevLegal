@@ -20,6 +20,37 @@ import type { LegalSource, CitationRef, AnswerChunk } from "@/lib/legal/types";
 import type { ResearchReport } from "@/lib/legal-research/types";
 import { cn } from "@/lib/utils";
 import { MarkdownAnswer } from "./MarkdownAnswer";
+import { TotalAiFailureBanner, DeterministicOnlyNote } from "./States";
+
+/** §21 — analysis status surfaced via the metadata chunk. */
+export type AnalysisStatus = "COMPLETE" | "PARTIAL_AI_UNAVAILABLE" | "DETERMINISTIC_ONLY";
+
+/** §72 — stage-trace entry surfaced via the metadata chunk. */
+export interface StageTraceEntry {
+  stage: string;
+  provider?: string;
+  status: string;
+  latencyMs: number;
+  note?: string;
+}
+
+/**
+ * §59/§61 — Phase 4.1 metadata chunk emitted as the FIRST SSE event by
+ * /api/answer. Not part of the legacy `AnswerChunk` union; we accept it
+ * via a widened local type so the UI can drive the §97 / §98 banners.
+ */
+type MetadataChunk = {
+  type: "metadata";
+  analysisStatus: AnalysisStatus;
+  aiStatus?: "AI_UNAVAILABLE";
+  stageTrace?: StageTraceEntry[];
+  evidenceCount?: number;
+  hasResearch?: boolean;
+  researchStages?: Array<{ stage: string; status: string; durationMs: number }>;
+  message?: string;
+};
+
+type AnyChunk = AnswerChunk | MetadataChunk;
 
 type AgentAnswerProps = {
   query: string;
@@ -52,6 +83,9 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext, war
   const [showFullAnswer, setShowFullAnswer] = useState(true);
   const [copied, setCopied] = useState(false);
   const [shared, setShared] = useState(false);
+  const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatus | null>(null);
+  const [stageTrace, setStageTrace] = useState<StageTraceEntry[]>([]);
+  const [aiMessage, setAiMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
@@ -67,6 +101,9 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext, war
       if (!followUpQuery) {
         setText("");
         setTurns([]);
+        setAnalysisStatus(null);
+        setStageTrace([]);
+        setAiMessage(null);
       } else {
         // Keep the existing text as the prior turn; we'll append the new answer below
         setTurns((prev) => [...prev, { role: "user", content: followUpQuery }, { role: "assistant", content: "" }]);
@@ -101,6 +138,9 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext, war
         let buffer = "";
         let firstTokenSeen = false;
         let accumulated = "";
+        // Track the latest analysisStatus inside the loop so the error-chunk
+        // handler can read it without waiting for React to re-render.
+        let latestAnalysisStatus: AnalysisStatus | null = null;
 
         while (true) {
           const { value, done } = await reader.read();
@@ -113,10 +153,18 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext, war
             if (!line.startsWith("data:")) continue;
             const payload = line.slice(5).trim();
             if (!payload || payload === "[DONE]") continue;
-            let chunk: AnswerChunk;
+            let chunk: AnyChunk;
             try {
               chunk = JSON.parse(payload);
             } catch {
+              continue;
+            }
+            if (chunk.type === "metadata") {
+              // §21 / §72 — analysis status + stage trace from the runtime.
+              latestAnalysisStatus = chunk.analysisStatus;
+              setAnalysisStatus(chunk.analysisStatus);
+              if (chunk.stageTrace) setStageTrace(chunk.stageTrace);
+              if (chunk.message) setAiMessage(chunk.message);
               continue;
             }
             if (chunk.type === "delta") {
@@ -160,7 +208,14 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext, war
             } else if (chunk.type === "error") {
               setErrorMsg(chunk.message);
               setRequestId(chunk.requestId);
-              setState("error");
+              // If the metadata chunk already classified the analysis as
+              // PARTIAL_AI_UNAVAILABLE / DETERMINISTIC_ONLY, keep that status
+              // — the error chunk is informational, not the final verdict.
+              if (latestAnalysisStatus && latestAnalysisStatus !== "COMPLETE") {
+                setState("done");
+              } else {
+                setState("error");
+              }
             }
           }
         }
@@ -424,6 +479,50 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext, war
 
       {/* Body */}
       <div className="px-4 py-4 sm:px-5 sm:py-5">
+        {/* §98 — TotalAiFailureBanner: rendered ABOVE the deterministic
+         * research area when analysisStatus === "PARTIAL_AI_UNAVAILABLE".
+         * PRESERVES all evidence/source/argument-map/applicability cards
+         * (those live in the page above this section; the banner simply
+         * explains why the AI answer area is missing). */}
+        {analysisStatus === "PARTIAL_AI_UNAVAILABLE" && <TotalAiFailureBanner />}
+
+        {/* §97 — DETERMINISTIC_ONLY: smaller note explaining deep analysis
+         * was not performed at all (no AI stages succeeded, deterministic
+         * retrieval/research ran solo). */}
+        {analysisStatus === "DETERMINISTIC_ONLY" && <DeterministicOnlyNote />}
+
+        {/* Optional collapsible stage trace (§72 — observability) so the
+         * user can see WHICH AI stage(s) failed without developer tools. */}
+        {analysisStatus && analysisStatus !== "COMPLETE" && stageTrace.length > 0 && (
+          <details className="mt-3 rounded-md border border-neutral-200 bg-neutral-50/60 px-3 py-2 text-xs text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900/40 dark:text-neutral-300">
+            <summary className="cursor-pointer select-none font-medium">
+              Վերլուծության փուլերի հետագիծ ({stageTrace.length})
+            </summary>
+            <ul className="mt-2 space-y-1">
+              {stageTrace.map((s, i) => (
+                <li key={i} className="flex items-center justify-between gap-2">
+                  <span className="truncate font-mono">
+                    {s.stage}
+                    {s.provider ? ` · ${s.provider}` : ""}
+                  </span>
+                  <span
+                    className={cn(
+                      "shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px]",
+                      s.status === "SUCCESS" || s.status === "SUCCESS_EMPTY"
+                        ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                        : s.status === "RATE_LIMITED" || s.status === "TIMEOUT"
+                          ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+                          : "bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300",
+                    )}
+                  >
+                    {s.status} · {s.latencyMs}ms
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+
         {state === "thinking" && !displayText && (
           <div className="flex items-center gap-2 text-sm text-neutral-500 dark:text-neutral-400">
             <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
@@ -431,11 +530,11 @@ export function AgentAnswer({ query, sources, autoStart = true, dateContext, war
           </div>
         )}
 
-        {state === "error" && (
+        {state === "error" && analysisStatus !== "PARTIAL_AI_UNAVAILABLE" && analysisStatus !== "DETERMINISTIC_ONLY" && (
           <div className="flex items-start gap-2.5 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             <div>
-              <p className="font-medium">{errorMsg}</p>
+              <p className="font-medium">{errorMsg ?? aiMessage ?? "AI վերլուծությունն այս պահին հասանելի չէ։"}</p>
               <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-400/80">
                 Հիմնական աղբյուրները վերևում մնում են հասանելի։ Կարող եք փորձել կրկին ստանալ վերլուծությունը։
               </p>

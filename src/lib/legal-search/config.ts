@@ -9,6 +9,17 @@ function envInt(name: string, def: number): number {
   return Number.isFinite(n) && n > 0 ? n : def;
 }
 
+function envBool(name: string, def: boolean): boolean {
+  const v = process.env[name];
+  if (v === undefined) return def;
+  return v === "1" || v.toLowerCase() === "true" || v.toLowerCase() === "yes";
+}
+
+function envStr(name: string, def: string): string {
+  const v = process.env[name];
+  return v === undefined || v === "" ? def : v;
+}
+
 // ---------------------------------------------------------------------------
 // Timeouts (spec §13)
 // ---------------------------------------------------------------------------
@@ -228,4 +239,50 @@ export const ANALYSIS = {
   /** §70 — bounded second research pass when temporal risks are flagged. */
   secondPassMaxQueries: 2,
   secondPassTimeoutMs: 6_000,
+} as const;
+
+// ---------------------------------------------------------------------------
+// Phase 4.1 — Security hotfixes (master prompt Part A §4–§14).
+// ---------------------------------------------------------------------------
+
+/**
+ * §5 — maximum number of HTTP redirects the SSRF-aware fetchGuarded will
+ * follow manually. Each redirect hostname goes through FRESH DNS validation
+ * (no trust is carried). Exceeding this limit raises a `redirect_limit`
+ * UrlPolicyError. Default 5 (env-tunable).
+ */
+export const MAX_REDIRECTS = envInt("URL_POLICY_MAX_REDIRECTS", 5);
+
+/**
+ * §11–§12 — application-level per-IP rate limits (in-memory token-bucket).
+ * Single-instance deployment; the abstraction is swappable for an external
+ * store later. Limits are expressed per minute (windowMs = 60s).
+ *
+ * Categories (§12) — QA is the strictest by design.
+ */
+export const RATE_LIMIT = {
+  windowMs: 60_000,
+  categories: {
+    quick_search: { capacity: envInt("RATE_LIMIT_QUICK_SEARCH", 60) },
+    deep_search: { capacity: envInt("RATE_LIMIT_DEEP_SEARCH", 10) },
+    answer: { capacity: envInt("RATE_LIMIT_ANSWER", 20) },
+    resolve: { capacity: envInt("RATE_LIMIT_RESOLVE", 30) },
+    qa: { capacity: envInt("RATE_LIMIT_QA", 5) },
+  },
+  /** Periodic prune of stale entries (ms). */
+  pruneIntervalMs: 5 * 60_000,
+  /** Entries older than this are prunable (ms). */
+  entryTtlMs: 10 * 60_000,
+} as const;
+
+/**
+ * §9–§10 — QA endpoint guard. Routes under /api/test/* are hidden from
+ * production unless explicitly enabled AND a bearer token matches.
+ *
+ *   LEGAL_QA_ENABLED  (default: false in production)
+ *   LEGAL_QA_TOKEN    server-side secret; never sent to the frontend
+ */
+export const QA = {
+  enabled: envBool("LEGAL_QA_ENABLED", false),
+  token: envStr("LEGAL_QA_TOKEN", ""),
 } as const;

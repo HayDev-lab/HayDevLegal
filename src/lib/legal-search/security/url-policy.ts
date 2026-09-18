@@ -16,6 +16,7 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { createHash } from "node:crypto";
+import { MAX_REDIRECTS } from "../config";
 
 const BLOCKED_LITERAL_HOSTS = new Set([
   "localhost",
@@ -94,7 +95,8 @@ export class UrlPolicyError extends Error {
       | "bad_scheme"
       | "blocked_host"
       | "private_address"
-      | "dns_failure",
+      | "dns_failure"
+      | "redirect_limit",
   ) {
     super(message);
     this.name = "UrlPolicyError";
@@ -170,18 +172,22 @@ export async function checkUrlSafeAsync(rawUrl: string): Promise<UrlPolicyCheck>
 export const MAX_DOCUMENT_BYTES = 3 * 1024 * 1024; // 3 MB hard cap per document
 
 /**
- * The ONLY sanctioned outbound fetch for the search engine.
- * Enforces: URL policy (SSRF), timeout, size cap, redirect policy.
+ * Validate a candidate URL for the SSRF policy AND (when allowedOrigins is
+ * non-empty) for the cross-origin allowlist. Used both for the initial
+ * fetch URL and for every redirect Location header (§4–§8).
+ *
+ * Returns the validated URL on success; throws UrlPolicyError on rejection.
  */
-export async function fetchGuarded(
+async function validateFetchUrl(
   rawUrl: string,
-  init: RequestInit & { timeoutMs?: number; maxBytes?: number; allowedOrigins?: string[] } = {},
-): Promise<Response> {
-  const { timeoutMs = 10_000, maxBytes = MAX_DOCUMENT_BYTES, allowedOrigins, ...rest } = init;
-
+  allowedOrigins?: string[],
+): Promise<URL> {
   const check = await checkUrlSafeAsync(rawUrl);
   if (!check.ok || !check.url) {
-    throw new UrlPolicyError(`URL blocked by policy (${check.reason}): ${rawUrl}`, check.reason!);
+    throw new UrlPolicyError(
+      `URL blocked by policy (${check.reason}): ${rawUrl}`,
+      check.reason!,
+    );
   }
   if (allowedOrigins && allowedOrigins.length > 0) {
     const origin = `${check.url.protocol}//${check.url.host}`;
@@ -189,6 +195,35 @@ export async function fetchGuarded(
       throw new UrlPolicyError(`Origin not allowed: ${origin}`, "blocked_host");
     }
   }
+  return check.url;
+}
+
+/**
+ * The ONLY sanctioned outbound fetch for the search engine.
+ * Enforces: URL policy (SSRF), timeout, size cap, and a MANUAL redirect loop.
+ *
+ * SECURITY (Phase 4.1 §4–§8):
+ *   - `redirect: "manual"` — we NEVER blindly follow a redirect.
+ *   - Each Location header is resolved to an absolute URL against the
+ *     current request URL, then re-validated through the FULL policy
+ *     (scheme allowlist, blocked hosts, FRESH DNS resolution, private-IP
+ *     pinning, allowedOrigins allowlist). Trust is never carried between
+ *     hosts.
+ *   - The redirect chain is capped at MAX_REDIRECTS (default 5). Exceeding
+ *     the limit raises UrlPolicyError("redirect_limit").
+ *   - The configured timeout covers the WHOLE redirect chain (a single
+ *     abort fires when the budget elapses).
+ *   - External abort signals are honoured.
+ *   - Response body size remains enforced by callers via readBodyCapped
+ *     (a streaming body cannot be bounded by headers alone).
+ */
+export async function fetchGuarded(
+  rawUrl: string,
+  init: RequestInit & { timeoutMs?: number; maxBytes?: number; allowedOrigins?: string[] } = {},
+): Promise<Response> {
+  const { timeoutMs = 10_000, maxBytes = MAX_DOCUMENT_BYTES, allowedOrigins, ...rest } = init;
+
+  const currentUrl = await validateFetchUrl(rawUrl, allowedOrigins);
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -199,16 +234,70 @@ export async function fetchGuarded(
     else external.addEventListener("abort", () => ctrl.abort(), { once: true });
   }
 
+  // The fetch options MINUS the body mutating fields we re-send verbatim
+  // (headers / method / body are preserved across redirects per RFC 7231
+  // for same-method redirects; for 303 we MUST switch to GET, but Datalex /
+  // HUDOC / ConCourt never emit 303). We preserve them and let the manual
+  // loop decide.
+  const baseInit: RequestInit = { ...rest, signal: ctrl.signal };
+
   try {
-    const res = await fetch(check.url.toString(), {
-      ...rest,
-      signal: ctrl.signal,
-      redirect: "follow",
-    });
-    // Note: full body size is enforced by callers reading with a cap
-    // (Response headers alone can't bound a streaming body).
-    void maxBytes;
-    return res;
+    let url = currentUrl;
+    for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+      const res = await fetch(url.toString(), {
+        ...baseInit,
+        redirect: "manual",
+      });
+
+      // 3xx → potential redirect. Resolve + validate the Location header.
+      const status = res.status;
+      const isRedirect =
+        status >= 300 && status < 400 && status !== 304; // 304 is "not modified", not a redirect
+      if (!isRedirect) {
+        void maxBytes; // size cap enforced downstream by readBodyCapped
+        return res;
+      }
+
+      const locationHeader = res.headers.get("location");
+      if (!locationHeader) {
+        // 3xx without Location → protocol error; return the response as-is
+        // so the caller can decide. This is rare and never bypasses policy.
+        void maxBytes;
+        return res;
+      }
+
+      if (hop === MAX_REDIRECTS) {
+        throw new UrlPolicyError(
+          `redirect limit exceeded (${MAX_REDIRECTS} hops) at ${url.toString()}`,
+          "redirect_limit",
+        );
+      }
+
+      // Resolve against the current URL (handles both relative and absolute).
+      let nextUrl: URL;
+      try {
+        nextUrl = new URL(locationHeader, url);
+      } catch {
+        throw new UrlPolicyError(
+          `invalid redirect Location header: ${locationHeader}`,
+          "bad_url",
+        );
+      }
+
+      // Drain the redirect response body so the underlying socket can be
+      // reused by undici; then continue with the fresh, re-validated URL.
+      try {
+        await res.body?.cancel();
+      } catch {
+        // ignore — body draining is best-effort
+      }
+
+      // FULL re-validation — DNS is checked fresh inside validateFetchUrl.
+      url = await validateFetchUrl(nextUrl.toString(), allowedOrigins);
+    }
+    // Unreachable — the loop returns on the first non-redirect response and
+    // throws on redirect-limit exhaustion at hop === MAX_REDIRECTS.
+    throw new UrlPolicyError("redirect loop terminated unexpectedly", "redirect_limit");
   } finally {
     clearTimeout(timer);
   }

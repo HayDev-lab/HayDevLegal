@@ -211,7 +211,14 @@ async function fetchDocument(
 
   // §24 — reuse a VALID session when the app already has one (a previously
   // user-solved captcha key). This is the only server-side path to the text.
-  const session = getSession("datalex");
+  //
+  // Phase 4.1 §13-§14: the GLOBAL_PUBLIC bootstrap session carries no
+  // captchaKey (solved CAPTCHAs live under USER_SESSION scope with a
+  // per-request key, which the search-time adapter does not have). So in
+  // practice this branch is dead code for the search-time path; kept for
+  // backward-compat with any pre-migration global entries that still carry
+  // a captchaKey from a prior boot.
+  const session = getSession("datalex", "GLOBAL_PUBLIC");
   if (session?.captchaKey) {
     try {
       const r = await datalexShowCase({

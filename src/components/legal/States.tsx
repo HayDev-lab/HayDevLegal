@@ -1,6 +1,6 @@
 "use client";
 
-import { Search, AlertTriangle, FileQuestion, Loader2, Scale, Sparkles, FileText } from "lucide-react";
+import { Search, AlertTriangle, FileQuestion, Loader2, Scale, Sparkles, FileText, ShieldAlert } from "lucide-react";
 
 export function SearchingState({ query }: { query: string }) {
   return (
@@ -123,5 +123,72 @@ export function HomeHero() {
         </span>
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// §98 — Total AI failure banner.
+//
+// Rendered when the unified AiRuntime could not produce ANY AI stage result
+// (all providers RATE_LIMITED / TIMEOUT / UNAVAILABLE / INVALID_SCHEMA / ERROR)
+// but the deterministic retrieval + research pipeline still succeeded. The
+// banner sits ABOVE the deterministic research so the user immediately sees
+// that deep AI analysis is offline while the verified evidence cards remain
+// visible and citable.
+//
+// Project styling rules: NO indigo/blue. Amber alert palette (bg-amber-50 /
+// text-amber-900 / border-amber-200, with dark-mode counterparts) is used
+// for the warning tone without signaling an unrecoverable error.
+// ---------------------------------------------------------------------------
+
+export function TotalAiFailureBanner() {
+  return (
+    <section
+      role="alert"
+      aria-live="polite"
+      aria-label="Խորքային AI վերլուծությունը ժամանակավորապես հասանելի չէ"
+      className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100 sm:p-5"
+    >
+      <div className="flex items-start gap-3">
+        <ShieldAlert
+          className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400"
+          aria-hidden
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold leading-snug">
+            Խորքային AI վերլուծությունը ժամանակավորապես հասանելի չէ։
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-amber-800 dark:text-amber-200/90">
+            Ստուգված աղբյուրները և կառուցվածքային վերլուծությունը պահպանված են։
+          </p>
+          <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-300/80">
+            Կարող եք շարունակել օգտվել աղբյուրներից ու վերլուծության քարտեզից կամ կրկին փորձել ստանալ վերլուծությունը մի քանի վայրկյանից։
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * §97 — smaller note for DETERMINISTIC_ONLY mode: no deep analysis was
+ * performed at all (the research pipeline ran only deterministic stages).
+ * Less alarming than the banner, because the user simply got the
+ * deterministic-only research dossier rather than a partial AI answer.
+ */
+export function DeterministicOnlyNote() {
+  return (
+    <section
+      aria-live="polite"
+      aria-label="Խորը վերլուծությունը չի կատարվել"
+      className="rounded-lg border border-neutral-200 bg-neutral-50 p-3 text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900/60 dark:text-neutral-300"
+    >
+      <div className="flex items-start gap-2.5">
+        <FileText className="mt-0.5 h-4 w-4 shrink-0 text-neutral-500 dark:text-neutral-400" aria-hidden />
+        <p className="text-xs leading-relaxed">
+          Խորքային AI վերլուծությունը չի իրականացվել։ Ստուգված աղբյուրներն ու որոնման արդյունքները հասանելի են։
+        </p>
+      </div>
+    </section>
   );
 }

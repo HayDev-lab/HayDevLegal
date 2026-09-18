@@ -89,9 +89,12 @@ async function ensureSession(timeoutMs: number): Promise<string> {
   if (!m) throw new Error("Datalex session bootstrap failed (no PHPSESSID)");
   sessionCookie = { value: m[1], fetchedAt: Date.now() };
   // Mirror the shared search session into the bounded session store (§26)
-  // so document resolution can reuse it (§24).
+  // so document resolution can reuse it (§24). This is the GLOBAL_PUBLIC
+  // anonymous bootstrap — no CAPTCHA, no user binding — so it stays on the
+  // legacy global bucket (Phase 4.1 §13-§14).
   setSession({
     source: "datalex",
+    scope: "GLOBAL_PUBLIC",
     cookies: `PHPSESSID=${m[1]}`,
     createdAt: Date.now(),
   });
@@ -282,11 +285,19 @@ export async function datalexShowCase(opts: {
   /** Dedicated session cookies (interactive flow); defaults to shared session. */
   cookies?: string;
   timeoutMs: number;
+  /**
+   * Phase 4.1 §13-§14 — when provided, a SOLVED captcha is stored under
+   * USER_SESSION scope with this key (per-request/per-user session id),
+   * never on the shared global bucket. The interactive /api/resolve flow
+   * passes a fresh crypto.randomUUID() here so concurrent users never
+   * share a solved-CAPTCHA session.
+   */
+  sessionId?: string;
 }): Promise<DatalexShowCaseResult> {
   const appName = opts.appName ?? "AppCaseSearch";
   const cookie =
     opts.cookies ??
-    (getSession("datalex")?.cookies ?? `PHPSESSID=${await ensureSession(opts.timeoutMs)}`);
+    (getSession("datalex", "GLOBAL_PUBLIC")?.cookies ?? `PHPSESSID=${await ensureSession(opts.timeoutMs)}`);
 
   const moduleParams = JSON.stringify({
     showHeaderBox: true,
@@ -353,11 +364,16 @@ export async function datalexShowCase(opts: {
   const html = data.result?.html;
   if (typeof html === "string" && html.trim().length > 0) {
     // The captcha text was accepted — remember it for session reuse (§24).
-    if (opts.captchaText) {
-      updateSession("datalex", {
-        cookies: cookie,
-        captchaKey: opts.captchaText,
-      });
+    // Phase 4.1 §13-§14: solved CAPTCHA sessions are stored under
+    // USER_SESSION scope with the per-request session id; the GLOBAL_PUBLIC
+    // bucket is NEVER polluted with a user-bound solved-CAPTCHA session.
+    if (opts.captchaText && opts.sessionId) {
+      updateSession(
+        "datalex",
+        { cookies: cookie, captchaKey: opts.captchaText },
+        "USER_SESSION",
+        opts.sessionId,
+      );
     }
     return { kind: "full_text", html };
   }

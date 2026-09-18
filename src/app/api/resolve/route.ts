@@ -18,9 +18,10 @@
 //   - a normal search NEVER blocks on this flow.
 
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { TIMEOUTS, POLICY } from "@/lib/legal-search/config";
 import { bootstrapDatalexSession, datalexShowCase, datalexCaseUrl } from "@/lib/legal-search/sources/datalex/client";
-import { updateSession } from "@/lib/legal-search/sources/session-store";
+import { getSession } from "@/lib/legal-search/sources/session-store";
 import { extractMainText } from "@/lib/legal-search/security/content-sanitizer";
 import { understandQuery } from "@/lib/legal-search/engine/query-understanding";
 import { extractPassages } from "@/lib/legal-search/engine/passage-extractor";
@@ -31,10 +32,14 @@ import {
   parseDocumentRef,
 } from "@/lib/legal-search/engine/resume-store";
 import type { LegalSearchResult } from "@/lib/legal-search/types";
+import { rateLimit } from "@/lib/legal-search/security/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
+
+// Phase 4.1 §13-§14 — UUID v4 format check for the optional replay sessionId.
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function GET(req: NextRequest) {
   const doc = req.nextUrl.searchParams.get("doc") ?? "";
@@ -70,7 +75,21 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  let body: { token?: unknown; captchaText?: unknown; query?: unknown };
+  // Phase 4.1 §11-§12 — rate-limit the resume POST (resolve category,
+  // 30/min default). The bootstrap GET is intentionally unthrottled: it
+  // only opens a Datalex session and returns a token, no source traffic.
+  const rl = await rateLimit("resolve")(req);
+  if (!rl.ok) {
+    return NextResponse.json(
+      { status: "error", error: "Չափազանց շատ հարցում։ Փորձեք ավելի ուշ։", retryAfterMs: rl.retryAfterMs },
+      {
+        status: rl.status,
+        headers: { "retry-after": String(Math.ceil(rl.retryAfterMs / 1000)) },
+      },
+    );
+  }
+
+  let body: { token?: unknown; captchaText?: unknown; query?: unknown; sessionId?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -81,11 +100,28 @@ export async function POST(req: NextRequest) {
   const captchaText = typeof body.captchaText === "string" ? body.captchaText.trim().slice(0, 12) : "";
   const query = typeof body.query === "string" ? body.query.slice(0, 400) : "";
 
+  // Phase 4.1 §13-§14 — per-request/per-user session id. Accept a replay id
+  // from the client (UUID format) or mint a fresh one. Solved-CAPTCHA
+  // sessions are stored under USER_SESSION scope with this key — never on
+  // the shared global bucket — so concurrent users never share a challenge.
+  const sessionIdRaw = typeof body.sessionId === "string" ? body.sessionId : "";
+  const sessionId = SESSION_ID_RE.test(sessionIdRaw) ? sessionIdRaw : randomUUID();
+
   const t = getResumeToken(token);
   if (!t) {
     return NextResponse.json({ status: "error", error: "Սեսիան սպառվել է։ Փակեք և կրկին բացեք պատուհանը։" }, { status: 410 });
   }
-  if (!/^[A-Za-z0-9]{3,10}$/.test(captchaText)) {
+
+  // Phase 4.1 §13-§14 — when the client replayed a valid sessionId and we
+  // already have a solved-CAPTCHA session for it, reuse the cookies + key
+  // directly (no captcha prompt needed — "solve once, view many" path).
+  const storedSession = sessionIdRaw
+    ? getSession("datalex", "USER_SESSION", sessionIdRaw)
+    : undefined;
+  const replayKey = storedSession?.captchaKey ?? "";
+  const cookies = storedSession?.cookies ?? t.cookies;
+
+  if (!replayKey && !/^[A-Za-z0-9]{3,10}$/.test(captchaText)) {
     return NextResponse.json({ status: "captcha_required", error: "Մուտքագրեք պատկերի տեքստը։" });
   }
   if (++t.attempts > 5) {
@@ -93,16 +129,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: "error", error: "Չափազանց շատ փորձ։ Կրկին բացեք պատուհանը։" }, { status: 429 });
   }
 
+  // Prefer the stored captchaKey (replay) over the freshly submitted one.
+  const submitCaptcha = replayKey || captchaText;
+
   try {
     const res = await datalexShowCase({
       caseExternalId: t.caseExternalId,
       appName: t.appName,
-      captchaText,
-      cookies: t.cookies,
+      captchaText: submitCaptcha,
+      cookies,
       timeoutMs: TIMEOUTS.documentMs,
+      // Storage of the solved session happens inside datalexShowCase under
+      // USER_SESSION:{sessionId} when this call succeeds. The legacy global
+      // bucket is never polluted.
+      sessionId,
     });
 
     if (res.kind === "captcha_required") {
+      // Stored key went stale — the source wants a fresh challenge.
       return NextResponse.json({ status: "captcha_required", error: "Տեքստը սխալ է։ Փորձեք կրկին։" });
     }
     if (res.kind !== "full_text") {
@@ -112,8 +156,8 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Success — retain the solved session for reuse (§24), drop the token.
-    updateSession("datalex", { cookies: t.cookies, captchaKey: captchaText });
+    // Success — the solved session is now stored under
+    // USER_SESSION:{sessionId}. Drop the resume token.
     dropResumeToken(token);
 
     const text = extractMainText(res.html, { maxChars: 120_000 });
@@ -146,6 +190,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       status: "resolved",
       url: t.canonicalUrl,
+      // Returned so subsequent /api/resolve calls can replay this solved
+      // session for other cases without re-prompting for a captcha.
+      sessionId,
       fullTextVerified: true,
       passages,
       textPreview: text.slice(0, 1500),
