@@ -209,6 +209,16 @@ export async function understandQueryWithLLM(
         }`,
       );
       return base;
+    case "AUTH_REQUIRED":
+      // §11 — Codex CLI installed but ChatGPT not signed in. Deterministic
+      // understanding is enough — return base unchanged (same behavior as the
+      // legacy catch-all fallback at the bottom of this function).
+      console.warn(
+        `[understandQueryWithLLM] AUTH_REQUIRED provider=${result.provider}${
+          result.detail ? ` detail=${result.detail}` : ""
+        } — codex login needed`,
+      );
+      return base;
     default: {
       const _exhaustive: never = result;
       void _exhaustive;

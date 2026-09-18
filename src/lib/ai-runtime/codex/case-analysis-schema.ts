@@ -46,6 +46,8 @@ const ApplicabilityVerdictSchema: ZodType<ApplicabilityVerdict> = z.enum([
 const ApplicablePrecedentSchema: ZodType<ApplicablePrecedent> = z.object({
   evidenceId: z.string().min(1),
   holding: z.string().min(1),
+  // §22 — optional supporting evidence array
+  supportingEvidence: z.array(EvidenceRefSchema).optional(),
   similarities: z.array(z.string()),
   distinguishingFactors: z.array(z.string()),
   applicability: ApplicabilityVerdictSchema,
@@ -61,8 +63,10 @@ const IssueAnalysisSchema: ZodType<IssueAnalysis> = z.object({
 
 const ArgumentMapEntrySchema: ZodType<ArgumentMapEntry> = z.object({
   proposition: z.string().min(1),
-  support: z.array(EvidenceRefSchema),
-  counter: z.array(EvidenceRefSchema),
+  // §22 — renamed from `support` to `supportingAuthorities`
+  supportingAuthorities: z.array(EvidenceRefSchema),
+  // §22 — renamed from `counter` to `counterAuthorities`
+  counterAuthorities: z.array(EvidenceRefSchema),
   limitations: z.array(z.string()),
 });
 
@@ -98,12 +102,13 @@ export type CodexOutputValidation =
 /**
  * Verify that every evidenceId referenced in `analysis` exists in `pack`.
  *
- * Walks:
+ * Walks (Phase 4.1 Finalization §22 — paths updated for new field names):
  *   - analysis.issues[].governingRules[]
- *   - analysis.issues[].applicablePrecedents[]      (precedent.evidenceId)
+ *   - analysis.issues[].applicablePrecedents[]               (precedent.evidenceId)
+ *   - analysis.issues[].applicablePrecedents[].supportingEvidence[]   (§22 NEW)
  *   - analysis.issues[].counterAuthorities[]
- *   - analysis.argumentMap[].support[]
- *   - analysis.argumentMap[].counter[]
+ *   - analysis.argumentMap[].supportingAuthorities[]        (renamed from `support`)
+ *   - analysis.argumentMap[].counterAuthorities[]           (renamed from `counter`)
  *
  * Also rejects an empty synthesis (§46 — empty synthesis means the model
  * gave up silently, which is not a valid answer).
@@ -124,16 +129,21 @@ export function validateCodexOutput(
     }
     for (const precedent of issue.applicablePrecedents ?? []) {
       referencedIds.push(precedent.evidenceId);
+      // §22 — walk the new supportingEvidence array if present
+      for (const ref of precedent.supportingEvidence ?? []) {
+        referencedIds.push(ref.evidenceId);
+      }
     }
     for (const ref of issue.counterAuthorities ?? []) {
       referencedIds.push(ref.evidenceId);
     }
   }
   for (const arg of analysis.argumentMap ?? []) {
-    for (const ref of arg.support ?? []) {
+    // §22 — renamed fields
+    for (const ref of arg.supportingAuthorities ?? []) {
       referencedIds.push(ref.evidenceId);
     }
-    for (const ref of arg.counter ?? []) {
+    for (const ref of arg.counterAuthorities ?? []) {
       referencedIds.push(ref.evidenceId);
     }
   }

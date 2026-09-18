@@ -7,20 +7,26 @@
 // caller is expected to call cleanupWorkspace() once the run is finished
 // (success OR failure).
 //
-// The workspace contains:
+// The workspace contains (Phase 4.1 Finalization §21):
 //   case.json                — the full CaseAnalysisPack (self-contained reference)
 //   issues.json              — pack.issues (LegalIssue[])
-//   legislation.json         — pack.legislation
+//   chronology.json          — pack.chronology (NEW §21)
+//   laws.json                — pack.legislation (RENAMED from legislation.json §21)
 //   cassation.json           — pack.cassationCases
-//   constitutional-court.json — pack.constitutionalCases
+//   concourt.json            — pack.constitutionalCases (RENAMED from constitutional-court.json §21)
 //   echr.json                — pack.echrCases
 //   evidence.json            — flat list of all evidence with their ids/types
 //                              (the master reference the codex CLI consults to
 //                              know which evidence ids are permissible)
+//   research.json            — pack.existingResearch (NEW §21 — optional)
+//   output-schema.json       — JSON Schema for CodexCaseAnalysis (NEW §21 —
+//                              written by the codex provider before invoking
+//                              codex exec --output-schema <file>)
 //
-// The codex CLI (owned by Task 2's providers) writes `analysis.json` to the
-// same directory. `readWorkspaceOutput` reads + Zod-validates that file and
-// returns `null` (never throws) when missing or structurally invalid.
+// The codex CLI (owned by src/lib/ai-runtime/providers/codex-{cli,sdk}.ts)
+// writes `analysis.json` to the same directory. `readWorkspaceOutput` reads +
+// Zod-validates that file and returns `null` (never throws) when missing or
+// structurally invalid.
 //
 // `verifyNoRepositoryMutation` is a guard for the §89 test: after a codex
 // run it should leave the project repository untouched. The function runs
@@ -83,11 +89,15 @@ export async function createWorkspace(
   const files: Record<string, string> = {
     "case.json": JSON.stringify(pack, null, 2),
     "issues.json": JSON.stringify(pack.issues, null, 2),
-    "legislation.json": JSON.stringify(pack.legislation, null, 2),
+    "chronology.json": JSON.stringify(pack.chronology ?? [], null, 2),
+    "laws.json": JSON.stringify(pack.legislation, null, 2),
     "cassation.json": JSON.stringify(pack.cassationCases, null, 2),
-    "constitutional-court.json": JSON.stringify(pack.constitutionalCases, null, 2),
+    "concourt.json": JSON.stringify(pack.constitutionalCases, null, 2),
     "echr.json": JSON.stringify(pack.echrCases, null, 2),
     "evidence.json": JSON.stringify(flatEvidence, null, 2),
+    "research.json": JSON.stringify(pack.existingResearch ?? null, null, 2),
+    // output-schema.json is written by the codex provider before invoking
+    // `codex exec --output-schema <file>` — it's not part of the pack.
   };
 
   // Write every file with mode 0600. Sequential writes keep the permissions

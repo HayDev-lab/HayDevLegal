@@ -80,7 +80,10 @@ export const OLLAMA_CLOUD_CONFIG: OllamaCloudConfig = {
 };
 
 // ---------------------------------------------------------------------------
-// §33–§34 — Codex SDK (OpenAI codex package; stub until installed)
+// §14 — Codex SDK / API-key transport (OPTIONAL only)
+// Per Phase 4.1 Finalization §14: CODEX_SDK_ENABLED defaults to false.
+// The API-key path is a SEPARATE API-billed transport; never silently
+// enabled when CLI is rate-limited (§13, §41).
 // ---------------------------------------------------------------------------
 
 export interface CodexSdkConfig {
@@ -95,10 +98,11 @@ export interface CodexSdkConfig {
 }
 
 export const CODEX_SDK_CONFIG: CodexSdkConfig = {
+  // §14 — OPTIONAL only. Never auto-enable when CLI is rate-limited (§41).
   enabled: envBool("CODEX_SDK_ENABLED", false),
   apiKey: envStr("CODEX_API_KEY", ""),
   model: envStr("CODEX_MODEL", "gpt-5-codex"),
-  workspaceRoot: envStr("CODEX_WORKSPACE_ROOT", "/tmp/codex-workspaces"),
+  workspaceRoot: envStr("CODEX_SDK_WORKSPACE_ROOT", "/tmp/haydevlegal-case"),
   maxTokens: envInt("CODEX_SDK_MAX_TOKENS", 16_000),
   defaultTimeoutMs: envInt("CODEX_SDK_TIMEOUT_MS", 120_000),
   // Probed at registry init; false until proven otherwise (§111).
@@ -106,23 +110,35 @@ export const CODEX_SDK_CONFIG: CodexSdkConfig = {
 };
 
 // ---------------------------------------------------------------------------
-// §35–§36 — Codex CLI (subprocess; stub until binary is on PATH)
+// §15 — Codex CLI (PRIMARY transport via ChatGPT account auth)
+// Per Phase 4.1 Finalization: CODEX_CLI_ENABLED defaults to true; the
+// primary Codex path uses the user's ChatGPT plan allowance, NOT an API
+// key. The optional API-key path is governed by CODEX_SDK_ENABLED below.
 // ---------------------------------------------------------------------------
 
 export interface CodexCliConfig {
+  /** Default true — Codex CLI is the primary deep-analysis engine. */
   enabled: boolean;
-  binary: string;
+  /** Explicit override for the codex binary path (§9.1). */
+  cliPath: string;
+  /** Model name (optional; CLI uses account-default when unset). */
+  model: string;
+  /** Reasoning effort: minimal|low|medium|high|xhigh|max|ultra|persistent. */
+  reasoningEffort: string;
   workspaceRoot: string;
   maxTokens: number;
   defaultTimeoutMs: number;
-  /** Probed at registry init via `which codex` (§111). */
+  /** Probed at registry init via 3-path detection (§9). */
   binaryAvailable: boolean;
 }
 
 export const CODEX_CLI_CONFIG: CodexCliConfig = {
-  enabled: envBool("CODEX_CLI_ENABLED", false),
-  binary: envStr("CODEX_CLI_BINARY", "codex"),
-  workspaceRoot: envStr("CODEX_CLI_WORKSPACE_ROOT", "/tmp/codex-workspaces"),
+  // §15 — Codex CLI is the PRIMARY transport; enabled by default.
+  enabled: envBool("CODEX_CLI_ENABLED", true),
+  cliPath: envStr("CODEX_CLI_PATH", ""),
+  model: envStr("CODEX_MODEL", ""),
+  reasoningEffort: envStr("CODEX_REASONING_EFFORT", "medium"),
+  workspaceRoot: envStr("CODEX_CLI_WORKSPACE_ROOT", "/tmp/haydevlegal-case"),
   maxTokens: envInt("CODEX_CLI_MAX_TOKENS", 16_000),
   defaultTimeoutMs: envInt("CODEX_CLI_TIMEOUT_MS", 180_000),
   binaryAvailable: false,
@@ -134,29 +150,29 @@ export const CODEX_CLI_CONFIG: CodexCliConfig = {
 // ---------------------------------------------------------------------------
 
 export const ROUTING_POLICY: Record<AiTaskType, AiProviderId[]> = {
-  // §25 — QUERY_DECOMPOSITION: Z-AI → Ollama Cloud → (deterministic implicit)
+  // §8 — QUERY_DECOMPOSITION: Z-AI → Ollama Cloud → (deterministic implicit)
   QUERY_DECOMPOSITION: ["zai", "ollama-cloud"],
-  // §25 — LIGHT_HOLDING_EXTRACTION: Ollama Cloud → Z-AI → Codex SDK
-  LIGHT_HOLDING_EXTRACTION: ["ollama-cloud", "zai", "codex-sdk"],
-  // §25 — MATERIAL_FACT_EXTRACTION: Ollama Cloud → Z-AI → Codex SDK
-  MATERIAL_FACT_EXTRACTION: ["ollama-cloud", "zai", "codex-sdk"],
-  // §25 — CASE_ANALYSIS: Codex SDK → Codex CLI → Ollama Cloud
-  CASE_ANALYSIS: ["codex-sdk", "codex-cli", "ollama-cloud"],
-  // §25 — MULTI_CASE_COMPARISON: Codex SDK → Codex CLI → Ollama Cloud
-  MULTI_CASE_COMPARISON: ["codex-sdk", "codex-cli", "ollama-cloud"],
-  // §25 — PRECEDENT_APPLICABILITY: Codex SDK → Codex CLI → Ollama Cloud
-  PRECEDENT_APPLICABILITY: ["codex-sdk", "codex-cli", "ollama-cloud"],
-  // §25 — DISTINGUISHING_ANALYSIS: Codex SDK → Codex CLI → Ollama Cloud
-  DISTINGUISHING_ANALYSIS: ["codex-sdk", "codex-cli", "ollama-cloud"],
-  // §25 — PRECEDENT_LINEAGE: Codex SDK → Codex CLI → Ollama Cloud
-  PRECEDENT_LINEAGE: ["codex-sdk", "codex-cli", "ollama-cloud"],
-  // §25 — COUNTER_AUTHORITY_ANALYSIS: Codex SDK → Codex CLI → Ollama Cloud
-  COUNTER_AUTHORITY_ANALYSIS: ["codex-sdk", "codex-cli", "ollama-cloud"],
-  // §25 — ARGUMENT_MAP: Codex SDK → Codex CLI → Ollama Cloud
-  ARGUMENT_MAP: ["codex-sdk", "codex-cli", "ollama-cloud"],
-  // §25 — DEEP_CASE_SYNTHESIS: Codex SDK → Codex CLI → Ollama Cloud → Z-AI
-  DEEP_CASE_SYNTHESIS: ["codex-sdk", "codex-cli", "ollama-cloud", "zai"],
-  // §25 — FINAL_ANSWER: configured best healthy cloud provider
+  // §8 — LIGHT_HOLDING_EXTRACTION: Ollama Cloud → Z-AI → codex-cli only if budget allows
+  LIGHT_HOLDING_EXTRACTION: ["ollama-cloud", "zai", "codex-cli"],
+  // §8 — MATERIAL_FACT_EXTRACTION: Ollama Cloud → Z-AI → codex-cli only if budget allows
+  MATERIAL_FACT_EXTRACTION: ["ollama-cloud", "zai", "codex-cli"],
+  // §7 — CASE_ANALYSIS: codex-cli (PRIMARY) → codex-sdk (optional API) → ollama-cloud
+  CASE_ANALYSIS: ["codex-cli", "codex-sdk", "ollama-cloud"],
+  // §7 — MULTI_CASE_COMPARISON: codex-cli → codex-sdk → ollama-cloud
+  MULTI_CASE_COMPARISON: ["codex-cli", "codex-sdk", "ollama-cloud"],
+  // §7 — PRECEDENT_APPLICABILITY: codex-cli → codex-sdk → ollama-cloud
+  PRECEDENT_APPLICABILITY: ["codex-cli", "codex-sdk", "ollama-cloud"],
+  // §7 — DISTINGUISHING_ANALYSIS: codex-cli → codex-sdk → ollama-cloud
+  DISTINGUISHING_ANALYSIS: ["codex-cli", "codex-sdk", "ollama-cloud"],
+  // §7 — PRECEDENT_LINEAGE: codex-cli → codex-sdk → ollama-cloud
+  PRECEDENT_LINEAGE: ["codex-cli", "codex-sdk", "ollama-cloud"],
+  // §7 — COUNTER_AUTHORITY_ANALYSIS: codex-cli → codex-sdk → ollama-cloud
+  COUNTER_AUTHORITY_ANALYSIS: ["codex-cli", "codex-sdk", "ollama-cloud"],
+  // §7 — ARGUMENT_MAP: codex-cli → codex-sdk → ollama-cloud
+  ARGUMENT_MAP: ["codex-cli", "codex-sdk", "ollama-cloud"],
+  // §7 — DEEP_CASE_SYNTHESIS: codex-cli → codex-sdk → ollama-cloud → zai (4th fallback)
+  DEEP_CASE_SYNTHESIS: ["codex-cli", "codex-sdk", "ollama-cloud", "zai"],
+  // §8 — FINAL_ANSWER: configured healthy fast cloud provider
   FINAL_ANSWER: ["zai", "ollama-cloud"],
 };
 
@@ -242,8 +258,8 @@ export function describeProviderConfig(): Record<
       configured: CODEX_CLI_CONFIG.binaryAvailable,
       detail: CODEX_CLI_CONFIG.enabled
         ? CODEX_CLI_CONFIG.binaryAvailable
-          ? "binary on PATH"
-          : "enabled but `codex` not on PATH"
+          ? "binary available (cli-chatgpt transport)"
+          : "enabled but `codex` binary not found in CODEX_CLI_PATH / node_modules/.bin / PATH"
         : "CODEX_CLI_ENABLED=false",
     },
   };

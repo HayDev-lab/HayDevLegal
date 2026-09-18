@@ -122,6 +122,39 @@ describe("AiResult discriminated union (§19, §81)", () => {
     }
   });
 
+  test("AUTH_REQUIRED carries optional detail (Phase 4.1 Finalization §11)", () => {
+    // Phase 4.1 Finalization §11: AUTH_REQUIRED is a new AiResult status
+    // for "Codex CLI binary installed but ChatGPT not signed in". Distinct
+    // from UNAVAILABLE (binary missing) and RATE_LIMITED (signed in but
+    // quota exhausted). The exhaustive-switch test above covers the type
+    // narrowing; this test pins the value-level shape.
+    const r: AiResult<string> = {
+      status: "AUTH_REQUIRED",
+      provider: "codex-cli",
+      detail: "ChatGPT sign-in required",
+    };
+    expect(r.status).toBe("AUTH_REQUIRED");
+    if (r.status === "AUTH_REQUIRED") {
+      expect(r.provider).toBe("codex-cli");
+      expect(r.detail).toBe("ChatGPT sign-in required");
+    }
+  });
+
+  test("AUTH_REQUIRED without detail is also valid (provider-only signal)", () => {
+    // The detail field is OPTIONAL — providers MAY return AUTH_REQUIRED
+    // with just the provider id (the status itself is self-explanatory
+    // once you know it's the CLI transport).
+    const r: AiResult<string> = {
+      status: "AUTH_REQUIRED",
+      provider: "codex-cli",
+    };
+    expect(r.status).toBe("AUTH_REQUIRED");
+    if (r.status === "AUTH_REQUIRED") {
+      expect(r.provider).toBe("codex-cli");
+      expect(r.detail).toBeUndefined();
+    }
+  });
+
   test("exhaustive switch on status — TypeScript narrowing proof", () => {
     // This function will not compile if the switch is non-exhaustive or if
     // a branch accesses a field that doesn't exist on that status.
@@ -133,6 +166,10 @@ describe("AiResult discriminated union (§19, §81)", () => {
           return "empty";
         case "RATE_LIMITED":
           return `429:${r.retryAfterMs ?? 0}`;
+        case "AUTH_REQUIRED":
+          // §11 Phase 4.1 Finalization — new status for "CLI installed but
+          // ChatGPT not signed in".
+          return `auth:${r.detail ?? ""}`;
         case "TIMEOUT":
           return "timeout";
         case "INVALID_SCHEMA":

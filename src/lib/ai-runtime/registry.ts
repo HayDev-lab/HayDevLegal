@@ -6,6 +6,7 @@
 // cases.
 
 import { spawnSync } from "node:child_process";
+import path from "node:path";
 import type {
   AiProvider,
   AiProviderHealth,
@@ -33,23 +34,60 @@ import { resetBreakers } from "./circuit-breaker";
 // ---------------------------------------------------------------------------
 
 /**
- * Sync probe for `which codex` via `codex --version` (§35). Uses
- * spawnSync with NO shell interpolation. Failures are silent — the binary
- * is treated as unavailable, which surfaces honestly as UNAVAILABLE in
- * health. Called once at module load.
+ * §9 — Codex CLI detection (Phase 4.1 Finalization).
+ * Check in this order:
+ *   1. explicitly configured CODEX_CLI_PATH
+ *   2. project-local binary at node_modules/.bin/codex
+ *   3. PATH resolution (just "codex")
+ * Never use shell interpolation. Use spawnSync with argument arrays.
+ *
+ * Failures are silent — the binary is treated as unavailable, which surfaces
+ * honestly as UNAVAILABLE in health. Called once at module load.
+ *
+ * NOTE: this only checks binary existence, NOT ChatGPT auth state. The
+ * CodexCliProvider.health() method does the auth check separately (via
+ * `codex login status`) so /api/health can distinguish HEALTHY vs
+ * AUTH_REQUIRED vs RATE_LIMITED (§10, §11, §36).
  */
 function probeCodexCliAvailability(): boolean {
   if (!CODEX_CLI_CONFIG.enabled) return false;
+  const candidates: string[] = [];
+  if (CODEX_CLI_CONFIG.cliPath) candidates.push(CODEX_CLI_CONFIG.cliPath);
+  // Project-local binary installed via `bun add @openai/codex-sdk`
+  // (auto-installs @openai/codex which provides the `codex` bin).
   try {
-    const r = spawnSync(CODEX_CLI_CONFIG.binary, ["--version"], {
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
-      timeout: 3_000,
-    });
-    return r.status === 0;
+    candidates.push(pathResolve("node_modules/.bin/codex"));
   } catch {
-    return false;
+    // process.cwd() unavailable in some edge environments — skip.
   }
+  candidates.push("codex"); // PATH resolution (last resort)
+
+  for (const candidate of candidates) {
+    try {
+      const r = spawnSync(candidate, ["--version"], {
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: false,
+        timeout: 3_000,
+      });
+      if (r.status === 0) {
+        // Remember which candidate worked so the provider doesn't have to
+        // re-probe. We store it on the config object's `cliPath` field if it
+        // was empty (operator didn't override).
+        if (!CODEX_CLI_CONFIG.cliPath) {
+          (CODEX_CLI_CONFIG as { cliPath: string }).cliPath = candidate;
+        }
+        return true;
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return false;
+}
+
+// Local helper — kept simple now that `node:path` is imported at module top.
+function pathResolve(relative: string): string {
+  return path.resolve(process.cwd(), relative);
 }
 
 /**
@@ -169,16 +207,22 @@ export function updateRuntimeState(
 /**
  * Map the various status sources into a single AiProviderHealthStatus the
  * router consults. The router treats only "HEALTHY" as eligible.
+ *
+ * §11 — Phase 4.1 Finalization: AUTH_REQUIRED is a distinct state from
+ * UNCONFIGURED / UNAVAILABLE / RATE_LIMITED. It means "binary installed but
+ * ChatGPT not signed in" — the user must run `codex login` manually.
  */
 export function deriveHealthStatus(
   id: AiProviderId,
   providerHealth: AiProviderHealth,
 ): AiProviderHealthStatus {
-  // Provider's own verdict wins for UNCONFIGURED/UNAVAILABLE.
+  // Provider's own verdict wins for UNCONFIGURED/UNAVAILABLE/AUTH_REQUIRED.
   if (providerHealth.status === "UNCONFIGURED") return "UNCONFIGURED";
+  if (providerHealth.status === "AUTH_REQUIRED") return "AUTH_REQUIRED";
   if (isInCooldown(id)) return "RATE_LIMITED";
   if (isOpen(id)) return "CIRCUIT_OPEN";
   if (providerHealth.status === "UNAVAILABLE") return "UNAVAILABLE";
+  if (providerHealth.status === "RATE_LIMITED") return "RATE_LIMITED";
   return "HEALTHY";
 }
 
@@ -281,6 +325,13 @@ export function recordAttempt(
     case "UNAVAILABLE":
       s.status = "UNAVAILABLE";
       s.failures += 1;
+      s.lastErrorAt = Date.now();
+      break;
+    case "AUTH_REQUIRED":
+      // §11 — Codex CLI installed but ChatGPT not signed in. NOT a failure
+      // (don't increment `failures` — that would trip the circuit breaker
+      // for what is really a user-action-required state, not a provider bug).
+      s.status = "AUTH_REQUIRED";
       s.lastErrorAt = Date.now();
       break;
     case "UNCONFIGURED":

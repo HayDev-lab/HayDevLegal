@@ -192,3 +192,73 @@ export function DeterministicOnlyNote() {
     </section>
   );
 }
+
+/**
+ * §51 — Phase 4.1 Finalization: Codex ChatGPT plan allowance exhausted.
+ * Distinct from TotalAiFailureBanner (which is for ALL providers down).
+ * This banner is shown when Codex is RATE_LIMITED specifically (the user's
+ * ChatGPT plan Codex allowance is temporarily exhausted). The system
+ * continues with Ollama Cloud / Z-AI / deterministic analysis where
+ * configured — NO silent switch to API-key billing (§13, §41).
+ */
+export function CodexRateLimitedBanner() {
+  return (
+    <section
+      role="alert"
+      aria-live="polite"
+      aria-label="Codex-ի խորքային վերլուծության հասանելի սահմանաչափը ժամանակավորապես սպառված է"
+      className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100 sm:p-5"
+    >
+      <div className="flex items-start gap-3">
+        <ShieldAlert
+          className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400"
+          aria-hidden
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold leading-snug">
+            Codex-ի խորքային վերլուծության հասանելի սահմանաչափը ժամանակավորապես սպառված է։
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-amber-800 dark:text-amber-200/90">
+            Ստուգված աղբյուրները և կառուցվածքային իրավական վերլուծությունը հասանելի են, իսկ համակարգը շարունակում է այլ հասանելի մոդելով, եթե այն կարգավորված է։
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * §11 — Phase 4.1 Finalization: Codex CLI is installed but ChatGPT sign-in
+ * is required. The user must complete the official `codex login` flow
+ * manually. We do NOT fake availability and do NOT silently switch to
+ * API-key billing (§41). The system continues with Ollama Cloud / Z-AI /
+ * deterministic analysis where configured.
+ */
+export function CodexAuthRequiredBanner() {
+  return (
+    <section
+      role="alert"
+      aria-live="polite"
+      aria-label="Codex-ի խորքային վերլուծության համար պահանջվում է ChatGPT մուտք"
+      className="rounded-xl border border-sky-200 bg-sky-50 p-4 text-sky-900 dark:border-sky-900/50 dark:bg-sky-950/40 dark:text-sky-100 sm:p-5"
+    >
+      <div className="flex items-start gap-3">
+        <ShieldAlert
+          className="mt-0.5 h-5 w-5 shrink-0 text-sky-600 dark:text-sky-400"
+          aria-hidden
+        />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold leading-snug">
+            Codex-ի խորքային վերլուծության համար պահանջվում է ChatGPT մուտք։
+          </p>
+          <p className="mt-1 text-xs leading-relaxed text-sky-800 dark:text-sky-200/90">
+            Ստուգված աղբյուրները և կառուցվածքային իրավական վերլուծությունը հասանելի են, իսկ համակարգը շարունակում է այլ հասանելի մոդելով, եթե այն կարգավորված է։
+          </p>
+          <p className="mt-2 text-[11px] text-sky-700 dark:text-sky-300/80 font-mono">
+            Ադմինիստրատորի ցուցում՝ գործարկել &ldquo;codex login&rdquo; տերմինալում՝ ChatGPT հաշվով մուտք գործելու համար։
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}

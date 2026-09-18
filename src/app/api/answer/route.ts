@@ -678,6 +678,7 @@ export async function POST(req: NextRequest) {
             return;
           }
           case "RATE_LIMITED":
+          case "AUTH_REQUIRED":
           case "TIMEOUT":
           case "UNAVAILABLE":
           case "INVALID_SCHEMA":

@@ -1,8 +1,11 @@
 // src/lib/ai-runtime/providers/codex-cli.ts
 // Codex CLI provider — REAL subprocess invocation (§35–§36, §40–§46).
 //
-// This is the FALLBACK transport for CASE_ANALYSIS. Per §14:
-//   CASE_ANALYSIS → Codex SDK → Codex CLI → Ollama Cloud
+// This is the PRIMARY transport for CASE_ANALYSIS. Per Phase 4.1 Finalization:
+//   CASE_ANALYSIS → Codex CLI → Codex SDK (optional) → Ollama Cloud
+// The CLI uses the user's ChatGPT account auth (no API key); the SDK is the
+// OPTIONAL API-billed path (gated by CODEX_SDK_ENABLED, defaults to false —
+// §13, §41: never silently switch to API-key billing when CLI is rate-limited).
 //
 // It spawns the `codex` binary as a subprocess (NO shell interpolation —
 // §35) using the `exec` subcommand with these flags:
@@ -21,10 +24,12 @@
 //     -C <workspace> \                           (§43 — isolated cwd)
 //     <combined prompt>
 //
-// Controlled env (§36 — no inherited secrets): only PATH + HOME + CODEX_API_KEY
-// (when set) are passed to the child. The cwd is the request-scoped workspace
-// created by `createWorkspace()` — the subprocess sees only the case pack
-// files written there.
+// Controlled env (§36 — no inherited secrets): only PATH + HOME are passed
+// unconditionally. CODEX_API_KEY is forwarded ONLY when CODEX_SDK_ENABLED=true
+// (§13, §41 — never silently switch to API-key billing when CLI is configured
+// for ChatGPT account auth). The cwd is the request-scoped workspace created
+// by `createWorkspace()` — the subprocess sees only the case pack files
+// written there.
 //
 // Output extraction strategy:
 //   1. Read <workspace>/last-message.txt — cleanest path; the codex CLI
@@ -62,7 +67,10 @@
 //
 // §111 (never fake a pass): the binary is probed via `codex --version`
 // (spawnSync, shell:false). If not found, `binaryAvailable` stays false and
-// health() returns UNAVAILABLE.
+// health() returns UNAVAILABLE. ChatGPT account auth is probed separately via
+// `codex login status` (also spawnSync, shell:false — does NOT consume quota,
+// per §11). When the binary is available AND the ChatGPT account is signed
+// out, health() returns AUTH_REQUIRED (distinct from RATE_LIMITED per §36).
 
 import type {
   AiProvider,
@@ -74,8 +82,8 @@ import type {
   AiStructuredRequest,
   AiTextRequest,
 } from "../types";
-import { CODEX_CLI_CONFIG } from "../config";
-import { spawn } from "node:child_process";
+import { CODEX_CLI_CONFIG, CODEX_SDK_CONFIG } from "../config";
+import { spawn, spawnSync } from "node:child_process";
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import { z } from "zod";
@@ -229,7 +237,7 @@ function spawnNoShell(
 }
 
 // ---------------------------------------------------------------------------
-// Binary resolution — probe CODEX_CLI_CONFIG.binary first; fall back to
+// Binary resolution — probe CODEX_CLI_CONFIG.cliPath || "codex" first; fall back to
 // node_modules/.bin/codex (where @openai/codex installs it as a dep of
 // @openai/codex-sdk). Cache the resolved path + availability on the instance.
 // ---------------------------------------------------------------------------
@@ -240,17 +248,134 @@ interface BinaryProbe {
   path: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// §10, §11 — ChatGPT account auth probe.
+// Spawns `codex login status` (spawnSync, no shell, 3s timeout — this is the
+// low-cost auth check per §11; it does NOT consume ChatGPT plan quota).
+// Result is cached on the provider instance for 60 seconds per §10
+// ("Cache auth/health state for a short TTL").
+//
+// Verified actual behavior of codex-cli 0.155.0:
+//   - When NOT logged in: stdout empty, stderr="Not logged in\n", exit=1
+//   - When logged in: stdout="Logged in as <email>\n", exit=0
+// We combine stdout + stderr and lower-case for a robust substring search.
+// "not logged in" is checked BEFORE "logged in" because the former contains
+// the latter as a substring.
+// ---------------------------------------------------------------------------
+
+interface ChatGptAuthProbe {
+  authenticated: boolean;
+  /** Populated when `authenticated` is false; suitable for /api/health detail. */
+  reason?: string;
+}
+
+/**
+ * Probe ChatGPT account auth by running `codex login status` (§11).
+ * Pure: takes the resolved binary path, returns the probe result. The caller
+ * (CodexCliProvider) handles caching on the instance.
+ *
+ * Per §11: do NOT invent obsolete auth syntax. The `codex login status`
+ * subcommand is verified to exist in codex-cli 0.155.0 via `codex login --help`.
+ * Per §111: never fake a pass — when the output is unrecognized, return
+ * `{ authenticated: false, reason: "codex login status check failed" }`.
+ */
+function probeChatGptAuth(binaryPath: string): ChatGptAuthProbe {
+  try {
+    const r = spawnSync(binaryPath, ["login", "status"], {
+      stdio: ["ignore", "pipe", "pipe"],
+      shell: false,
+      timeout: 3_000, // §11 — cheap check; don't let it hang
+      encoding: "utf8",
+    });
+    // codex login status writes "Not logged in" to stderr (verified in
+    // codex-cli 0.155.0) and "Logged in as <email>" to stdout. Combine both
+    // streams for a robust substring search.
+    const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`.toLowerCase();
+    // Check "not logged in" FIRST — "logged in" is a substring of
+    // "not logged in"; checking the negative case first avoids false
+    // positives.
+    if (out.includes("not logged in")) {
+      return { authenticated: false, reason: "ChatGPT sign-in required" };
+    }
+    if (out.includes("logged in as")) {
+      return { authenticated: true };
+    }
+    // Defensive: some future version may drop the "as <email>" suffix.
+    if (out.includes("logged in")) {
+      return { authenticated: true };
+    }
+    // Spawn ran but output was unrecognizable — per §111, never fake a pass.
+    return {
+      authenticated: false,
+      reason: "codex login status check failed (unrecognized output)",
+    };
+  } catch {
+    // Spawn itself failed (ENOENT, timeout, etc.). Honest: not authenticated.
+    return {
+      authenticated: false,
+      reason: "codex login status check failed (spawn error)",
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// §12, §13 — ChatGPT plan quota exhaustion indicators.
+// When `codex exec` fails (non-zero exit) and the combined stdout + stderr
+// contains any of these substrings (case-insensitive), we classify the
+// failure as RATE_LIMITED — NOT AUTH_FAILED, NOT UNAVAILABLE, NOT ERROR
+// (per §12). The router will fall through to the next provider in the
+// routing policy (codex-sdk → ollama-cloud), but the codex-sdk provider's
+// health() returns UNCONFIGURED when CODEX_SDK_ENABLED=false (§41 — never
+// silently switch to API-key billing).
+// ---------------------------------------------------------------------------
+
+const QUOTA_EXHAUSTION_INDICATORS: readonly string[] = [
+  "rate limit",
+  "rate_limit",
+  "ratelimit",
+  "quota",
+  "exceeded",
+  "exhausted",
+  "allowance",
+  "429",
+  "plan limit",
+  "limit reached",
+  "plan allowance",
+];
+
+/**
+ * Heuristic: does the codex exec subprocess output indicate ChatGPT plan
+ * quota exhaustion? Per §12, this MUST be classified as RATE_LIMITED.
+ *
+ * Caveat (heuristic, documented per §111): some indicators like "exceeded"
+ * are broad — a codex error like "token limit exceeded" would also match.
+ * Over-classification as RATE_LIMITED is conservative (the next call would
+ * likely fail too); under-classification as ERROR would lose the cooldown
+ * signal. We choose conservative per §13.
+ */
+function isChatGptQuotaExhausted(stdout: string, stderr: string): boolean {
+  const combined = `${stdout}\n${stderr}`.toLowerCase();
+  return QUOTA_EXHAUSTION_INDICATORS.some((ind) => combined.includes(ind));
+}
+
+/** §12 — conservative cooldown when ChatGPT plan allowance is exhausted. */
+const CHATGPT_QUOTA_COOLDOWN_MS = 300_000; // 5 minutes
+
+/** §10 — auth/health cache TTL (don't probe on every /api/health GET). */
+const AUTH_CACHE_TTL_MS = 60_000; // 60 seconds
+
 /**
  * Probe the codex binary by running `codex --version` (§35 — no shell).
- * Tries `CODEX_CLI_CONFIG.binary` first, then `node_modules/.bin/codex`.
+ * Tries `CODEX_CLI_CONFIG.cliPath || "codex"` first, then `node_modules/.bin/codex`.
  *
  * Per §111, NEVER fake a pass — if neither path resolves to a working
  * binary, `available` stays false.
  */
 function probeCodexBinary(): BinaryProbe {
   const candidates: string[] = [];
-  if (CODEX_CLI_CONFIG.binary && CODEX_CLI_CONFIG.binary.length > 0) {
-    candidates.push(CODEX_CLI_CONFIG.binary);
+  const cliPath = CODEX_CLI_CONFIG.cliPath || "codex";
+  if (cliPath.length > 0) {
+    candidates.push(cliPath);
   }
   // The codex binary is installed at node_modules/.bin/codex as a dep of
   // @openai/codex-sdk (verified: codex-cli 0.155.0).
@@ -395,14 +520,52 @@ export class CodexCliProvider implements AiProvider {
 
   // Cache the binary probe result on the instance (per §35 + the task
   // spec — do NOT rely on the registry's `binaryAvailable` flag, since
-  // CODEX_CLI_CONFIG.binary defaults to "codex" which is not on PATH and
+  // CODEX_CLI_CONFIG.cliPath || "codex" defaults to "codex" which is not on PATH and
   // the registry's probe will fail).
   private binaryCache: BinaryProbe | undefined;
+
+  // §10 — cache the ChatGPT auth probe result for AUTH_CACHE_TTL_MS (60s).
+  // Avoids re-running `codex login status` on every /api/health GET (which
+  // is cached 30s at the route layer, but the runtime layer may call
+  // health() more frequently under load).
+  private authCache:
+    | { result: ChatGptAuthProbe; expiresAt: number }
+    | undefined;
 
   private resolveBinary(): BinaryProbe {
     if (this.binaryCache) return this.binaryCache;
     this.binaryCache = probeCodexBinary();
     return this.binaryCache;
+  }
+
+  /**
+   * §10, §11 — ChatGPT account auth probe with 60s instance cache.
+   * Spawns `codex login status` (cheap; does NOT consume quota per §11).
+   *
+   * Returns a non-authenticated result with a clear `reason` when:
+   *   - the binary is not available (cannot probe auth without a binary)
+   *   - the spawn fails or the output is unrecognized (§111 — never fake)
+   *
+   * The "binary not available" case is NOT cached (transient state — the
+   * operator may install codex while the process is running). Only the
+   * actual probe result is cached.
+   */
+  private probeChatGptAuthCached(): ChatGptAuthProbe {
+    const now = Date.now();
+    if (this.authCache && this.authCache.expiresAt > now) {
+      return this.authCache.result;
+    }
+    const probe = this.resolveBinary();
+    if (!probe.available || !probe.path) {
+      // Binary not available — don't cache (transient state).
+      return {
+        authenticated: false,
+        reason: "codex binary not available — cannot check ChatGPT auth",
+      };
+    }
+    const result = probeChatGptAuth(probe.path);
+    this.authCache = { result, expiresAt: now + AUTH_CACHE_TTL_MS };
+    return result;
   }
 
   async health(): Promise<AiProviderHealth> {
@@ -414,7 +577,7 @@ export class CodexCliProvider implements AiProvider {
       };
     }
     // Probe the binary OURSELVES (per the task spec — the registry's probe
-    // uses CODEX_CLI_CONFIG.binary directly, which defaults to "codex" and
+    // uses CODEX_CLI_CONFIG.cliPath || "codex" directly, which defaults to "codex" and
     // is not on PATH; we need to also try node_modules/.bin/codex).
     const probe = this.resolveBinary();
     if (!probe.available) {
@@ -426,15 +589,33 @@ export class CodexCliProvider implements AiProvider {
       };
     }
     if (isInCooldown(this.id)) {
+      // §36 — signed IN but ChatGPT plan Codex allowance exhausted.
+      // Distinct from AUTH_REQUIRED (signed OUT) per §36 — the operator
+      // signed in successfully but consumed the plan's quota; a cooldown
+      // is in effect and we honor it here.
       return {
         status: "RATE_LIMITED",
         detail: `cooldown ${remainingCooldownMs(this.id)}ms`,
         lastCheckedAt: Date.now(),
       };
     }
+    // §11 — ChatGPT account auth probe. Cheap (does NOT consume quota);
+    // cached for 60s on the instance per §10. Only probed when binary is
+    // available AND not in cooldown — if we're in cooldown, the auth state
+    // is irrelevant (we already know we hit a quota limit and are waiting
+    // it out).
+    const auth = this.probeChatGptAuthCached();
+    if (!auth.authenticated) {
+      return {
+        status: "AUTH_REQUIRED",
+        detail:
+          "Codex CLI installed; ChatGPT sign-in required. Run: codex login",
+        lastCheckedAt: Date.now(),
+      };
+    }
     return {
       status: "HEALTHY",
-      detail: `binary=${probe.path ?? CODEX_CLI_CONFIG.binary}`,
+      detail: "codex-cli via ChatGPT account (primary transport)",
       lastCheckedAt: Date.now(),
     };
   }
@@ -478,6 +659,19 @@ export class CodexCliProvider implements AiProvider {
         status: "RATE_LIMITED",
         provider: this.id,
         retryAfterMs: remainingCooldownMs(this.id),
+      };
+    }
+    // §11 — ChatGPT account auth pre-check. If not signed in, return
+    // AUTH_REQUIRED without wasting time on the expensive codex exec
+    // subprocess (which would fail with an auth error anyway). Distinct
+    // from RATE_LIMITED per §36 (signed in but quota exhausted).
+    const auth = this.probeChatGptAuthCached();
+    if (!auth.authenticated) {
+      return {
+        status: "AUTH_REQUIRED",
+        provider: this.id,
+        detail:
+          "Codex CLI installed; ChatGPT sign-in required. Run: codex login",
       };
     }
 
@@ -572,20 +766,30 @@ IMPORTANT: Output ONLY a single JSON object matching the CodexCaseAnalysis schem
         combinedPrompt,
       ];
 
-      // Controlled env (§36 — no inherited secrets). Only PATH, HOME, and
-      // CODEX_API_KEY (when set) are passed through. The codex-cli config
-      // object does NOT carry the API key (the codex-sdk config does, but we
-      // don't import it here to keep the cli provider self-contained). We
-      // read CODEX_API_KEY from process.env directly.
+      // Controlled env (§36 — no inherited secrets). Only PATH and HOME are
+      // passed unconditionally. CODEX_API_KEY is forwarded ONLY when
+      // CODEX_SDK_ENABLED=true (§13, §41 — never silently switch to API-key
+      // billing when the CLI is configured for ChatGPT account auth). When
+      // CODEX_SDK_ENABLED=false (the default), the codex exec subprocess
+      // sees NO API key in env and MUST use the ChatGPT account credentials
+      // stored by `codex login` (verified via `codex login status` above).
+      //
+      // This gate is the §41 hard-test backstop: even if CODEX_API_KEY is
+      // accidentally present in process.env, the CLI subprocess will NOT
+      // receive it unless the operator has EXPLICITLY set CODEX_SDK_ENABLED=true.
+      // The codex-sdk provider's health() enforces the same gate from its
+      // side (returns UNCONFIGURED when CODEX_SDK_ENABLED=false), so the
+      // router will skip codex-sdk entirely when the CLI is rate-limited —
+      // preserving the no-silent-API-billing-switch rule (§13).
       const childEnv: NodeJS.ProcessEnv = {
         PATH: process.env.PATH ?? "",
         HOME: process.env.HOME ?? "/tmp",
       } as unknown as NodeJS.ProcessEnv;
-      // Forward CODEX_API_KEY when present (auth — NOT a secret leak since
-      // we explicitly allow-listed it).
-      const codexApiKey = process.env.CODEX_API_KEY;
-      if (codexApiKey && codexApiKey.length > 0) {
-        childEnv.CODEX_API_KEY = codexApiKey;
+      if (CODEX_SDK_CONFIG.enabled) {
+        const codexApiKey = process.env.CODEX_API_KEY;
+        if (codexApiKey && codexApiKey.length > 0) {
+          childEnv.CODEX_API_KEY = codexApiKey;
+        }
       }
 
       const timeoutMs = req.timeoutMs ?? CODEX_CLI_CONFIG.defaultTimeoutMs;
@@ -636,6 +840,9 @@ IMPORTANT: Output ONLY a single JSON object matching the CodexCaseAnalysis schem
       // Non-zero exit — classify the error.
       if (result.exitCode !== 0) {
         const stderrSnippet = result.stderr.slice(0, 512);
+        const stdoutSnippet = result.stdout.slice(0, 512);
+        // §24, §51 — classic 429 / "too many requests" detection (with
+        // Retry-After extraction when available).
         const rl = isRateLimitError(result.stderr);
         if (rl.rateLimited) {
           triggerCooldown(this.id, undefined, rl.retryAfterMs);
@@ -645,12 +852,34 @@ IMPORTANT: Output ONLY a single JSON object matching the CodexCaseAnalysis schem
             retryAfterMs: remainingCooldownMs(this.id),
           };
         }
+        // §12, §13 — ChatGPT plan Codex allowance exhausted (broader than
+        // 429 alone; the codex CLI surfaces this as "rate limit", "quota",
+        // "exceeded", "exhausted", "allowance", "plan limit reached", etc.).
+        // MUST be classified as RATE_LIMITED — NOT AUTH_FAILED, NOT
+        // UNAVAILABLE, NOT ERROR — per §12. The router will fall through
+        // to codex-sdk (UNCONFIGURED when CODEX_SDK_ENABLED=false) then
+        // ollama-cloud (§41 — no silent API-key billing switch).
+        if (isChatGptQuotaExhausted(result.stdout, result.stderr)) {
+          triggerCooldown(
+            this.id,
+            CHATGPT_QUOTA_COOLDOWN_MS,
+            CHATGPT_QUOTA_COOLDOWN_MS,
+          );
+          return {
+            status: "RATE_LIMITED",
+            provider: this.id,
+            retryAfterMs: CHATGPT_QUOTA_COOLDOWN_MS,
+          };
+        }
         return {
           status: "ERROR",
           provider: this.id,
           detail: `codex exec exit=${
             result.exitCode
-          } stderr=${stderrSnippet.slice(0, 256)}`,
+          } stderr=${stderrSnippet.slice(0, 256)} stdout=${stdoutSnippet.slice(
+            0,
+            128,
+          )}`,
         };
       }
 

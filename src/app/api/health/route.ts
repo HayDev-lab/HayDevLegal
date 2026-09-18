@@ -158,33 +158,54 @@ export async function GET() {
     }
   }
 
-  // §28–§29 — collapse codex-sdk + codex-cli into ONE logical `codex` provider
-  // with a `transport` field showing which underlying transport is currently
-  // healthy. The user-facing matrix has only 3 logical engines: Z-AI,
-  // Ollama Cloud, Codex.
+  // §28–§29, §36 — collapse codex-sdk + codex-cli into ONE logical `codex`
+  // provider with a `transport` field showing which underlying transport is
+  // currently healthy. Per Phase 4.1 Finalization §7: codex-cli (ChatGPT
+  // account auth) is PRIMARY; codex-sdk (API-key) is OPTIONAL fallback.
+  // transport values: "cli-chatgpt" | "sdk-api" | "unavailable"
+  // codex status can include AUTH_REQUIRED (CLI installed but ChatGPT not signed in).
   const codexSdkHealth = aiProviders["codex-sdk"] ?? shapeProviderHealth(undefined);
   const codexCliHealth = aiProviders["codex-cli"] ?? shapeProviderHealth(undefined);
-  let codexTransport: "sdk" | "cli" | "unavailable" = "unavailable";
+  let codexTransport: "cli-chatgpt" | "sdk-api" | "unavailable" = "unavailable";
   let codexStatus = "UNAVAILABLE";
   let codexDetail: string | undefined = undefined;
-  if (codexSdkHealth.status === "HEALTHY") {
-    codexTransport = "sdk";
+  // §7 — CLI is primary. Check CLI first.
+  if (codexCliHealth.status === "HEALTHY") {
+    codexTransport = "cli-chatgpt";
     codexStatus = "HEALTHY";
-    codexDetail = codexSdkHealth.detail ?? "codex-sdk (primary transport)";
-  } else if (codexCliHealth.status === "HEALTHY") {
-    codexTransport = "cli";
+    codexDetail = codexCliHealth.detail ?? "codex-cli via ChatGPT account (primary transport)";
+  } else if (codexCliHealth.status === "AUTH_REQUIRED") {
+    // §11 — CLI installed but ChatGPT not signed in. Distinct from RATE_LIMITED
+    // (signed in but quota exhausted) and UNAVAILABLE (binary missing).
+    codexTransport = "cli-chatgpt";
+    codexStatus = "AUTH_REQUIRED";
+    codexDetail = codexCliHealth.detail ?? "Codex CLI installed; ChatGPT sign-in required.";
+  } else if (codexCliHealth.status === "RATE_LIMITED") {
+    // §12, §13 — signed in but ChatGPT plan Codex allowance exhausted.
+    // Distinct from AUTH_REQUIRED — do NOT silently switch to API-key billing (§41).
+    codexTransport = "cli-chatgpt";
+    codexStatus = "RATE_LIMITED";
+    codexDetail = codexCliHealth.detail ?? "Codex CLI ChatGPT allowance exhausted; will retry after cooldown.";
+  } else if (codexSdkHealth.status === "HEALTHY") {
+    // §14 — optional API-key path. Only marked HEALTHY when CODEX_SDK_ENABLED=true
+    // AND api key is set AND sdk is installed. Never silently enabled (§41).
+    codexTransport = "sdk-api";
     codexStatus = "HEALTHY";
-    codexDetail = codexCliHealth.detail ?? "codex-cli (fallback transport)";
+    codexDetail = codexSdkHealth.detail ?? "codex-sdk via API key (optional transport)";
   } else {
     // Neither transport is healthy — surface the most informative reason.
     const reasons: string[] = [];
-    if (codexSdkHealth.detail) reasons.push(`sdk: ${codexSdkHealth.detail}`);
     if (codexCliHealth.detail) reasons.push(`cli: ${codexCliHealth.detail}`);
+    if (codexSdkHealth.detail) reasons.push(`sdk: ${codexSdkHealth.detail}`);
     codexDetail = reasons.length > 0 ? reasons.join(" | ") : undefined;
     codexStatus =
-      codexSdkHealth.status === "UNCONFIGURED" && codexCliHealth.status === "UNCONFIGURED"
+      codexCliHealth.status === "UNCONFIGURED" && codexSdkHealth.status === "UNCONFIGURED"
         ? "UNCONFIGURED"
-        : "UNAVAILABLE";
+        : codexCliHealth.status === "AUTH_REQUIRED" || codexSdkHealth.status === "AUTH_REQUIRED"
+          ? "AUTH_REQUIRED"
+          : codexCliHealth.status === "RATE_LIMITED" || codexSdkHealth.status === "RATE_LIMITED"
+            ? "RATE_LIMITED"
+            : "UNAVAILABLE";
   }
   const logicalAiProviders: Record<string, unknown> = {
     zai: aiProviders["zai"],
@@ -194,11 +215,11 @@ export async function GET() {
       transport: codexTransport,
       detail: codexDetail,
       lastCheckedAt:
-        codexTransport === "sdk"
-          ? codexSdkHealth.lastCheckedAt
-          : codexTransport === "cli"
-            ? codexCliHealth.lastCheckedAt
-            : codexSdkHealth.lastCheckedAt ?? codexCliHealth.lastCheckedAt,
+        codexTransport === "cli-chatgpt"
+          ? codexCliHealth.lastCheckedAt
+          : codexTransport === "sdk-api"
+            ? codexSdkHealth.lastCheckedAt
+            : codexCliHealth.lastCheckedAt ?? codexSdkHealth.lastCheckedAt,
     },
   };
 

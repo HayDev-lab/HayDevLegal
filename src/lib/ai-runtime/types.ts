@@ -54,6 +54,7 @@ export type AiResult<T> =
   | { status: "SUCCESS"; value: T; provider: AiProviderId; latencyMs: number }
   | { status: "SUCCESS_EMPTY"; provider: AiProviderId; latencyMs: number }
   | { status: "RATE_LIMITED"; provider: AiProviderId; retryAfterMs?: number }
+  | { status: "AUTH_REQUIRED"; provider: AiProviderId; detail?: string }
   | { status: "TIMEOUT"; provider: AiProviderId }
   | { status: "UNAVAILABLE"; provider: AiProviderId; detail?: string }
   | { status: "INVALID_SCHEMA"; provider: AiProviderId; detail?: string }
@@ -83,6 +84,7 @@ export interface AiProviderCapabilities {
 export type AiProviderHealthStatus =
   | "HEALTHY"
   | "UNCONFIGURED"
+  | "AUTH_REQUIRED"
   | "UNAVAILABLE"
   | "RATE_LIMITED"
   | "CIRCUIT_OPEN";
@@ -100,6 +102,7 @@ export interface AiProviderHealth {
 export type ProviderRuntimeStatus =
   | "HEALTHY"
   | "RATE_LIMITED"
+  | "AUTH_REQUIRED"
   | "DEGRADED"
   | "UNAVAILABLE"
   | "CIRCUIT_OPEN"

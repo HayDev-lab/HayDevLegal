@@ -47,7 +47,7 @@ Evidence IDs are the ONLY permissible references. Every citation MUST use a supp
 // ---------------------------------------------------------------------------
 
 const CODEX_CASE_ANALYSIS_JSON_CONTRACT = `\
-Your output MUST be a single JSON object with EXACTLY this shape:
+Your output MUST be a single JSON object with EXACTLY this shape (Phase 4.1 Finalization §22):
 
 {
   "issues": [
@@ -58,6 +58,7 @@ Your output MUST be a single JSON object with EXACTLY this shape:
         {
           "evidenceId":          "<id>",
           "holding":             "<the rule the court extracted, grounded in passages>",
+          "supportingEvidence":   [ { "evidenceId": "<id>", "quote": "...", "section": "<optional>" } ],
           "similarities":        [ "..." ],
           "distinguishingFactors":[ "..." ],
           "applicability":       "DIRECT" | "WITH_DISTINCTIONS" | "ANALOGICAL" | "NOT_APPLICABLE"
@@ -69,10 +70,10 @@ Your output MUST be a single JSON object with EXACTLY this shape:
   ],
   "argumentMap": [
     {
-      "proposition":  "<claim advanced by the analysis>",
-      "support":      [ { "evidenceId": "<id>", "quote": "...", "section": "<optional>" } ],
-      "counter":      [ { "evidenceId": "<id>", "quote": "...", "section": "<optional>" } ],
-      "limitations":  [ "..." ]
+      "proposition":             "<claim advanced by the analysis>",
+      "supportingAuthorities":   [ { "evidenceId": "<id>", "quote": "...", "section": "<optional>" } ],
+      "counterAuthorities":      [ { "evidenceId": "<id>", "quote": "...", "section": "<optional>" } ],
+      "limitations":             [ "..." ]
     }
   ],
   "missingMaterialFacts":     [ "<facts the pack cannot establish>" ],

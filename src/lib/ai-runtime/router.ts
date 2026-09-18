@@ -62,6 +62,12 @@ function isEligible(
 ): { ok: true } | { ok: false; reason: string } {
   const status = quickStatus(id);
   if (status === "UNCONFIGURED") return { ok: false, reason: "UNCONFIGURED" };
+  // §11 — AUTH_REQUIRED is distinct from UNAVAILABLE: the provider's binary
+  // exists but the user hasn't completed ChatGPT login. The router MUST
+  // skip it (same as UNAVAILABLE) so the next provider in the routing
+  // policy is tried. Provider's generateStructured() will also short-circuit
+  // with AUTH_REQUIRED if it's the only candidate left.
+  if (status === "AUTH_REQUIRED") return { ok: false, reason: "AUTH_REQUIRED" };
   if (status === "RATE_LIMITED" || isInCooldown(id))
     return { ok: false, reason: "RATE_LIMITED" };
   if (status === "CIRCUIT_OPEN" || !cbShouldAttempt(id))
@@ -102,6 +108,14 @@ function recordOutcome<T>(
       recordAttempt(id, "RATE_LIMITED");
       triggerCooldown(id, result.retryAfterMs, result.retryAfterMs);
       recordProviderCall(id, "RATE_LIMITED", 0);
+      break;
+    case "AUTH_REQUIRED":
+      // §11 — Codex CLI installed but ChatGPT not signed in. NOT a failure
+      // (don't trip the circuit breaker — this is user-action-required, not
+      // a provider bug). Record so subsequent eligibility checks skip this
+      // provider until the user completes `codex login`.
+      recordAttempt(id, "AUTH_REQUIRED");
+      recordProviderCall(id, "AUTH_REQUIRED" as unknown as "ERROR", 0);
       break;
     case "TIMEOUT":
       recordAttempt(id, "UNAVAILABLE");

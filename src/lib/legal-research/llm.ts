@@ -47,6 +47,7 @@ export type AnalysisOperationStatus =
   | "SUCCESS"
   | "SUCCESS_EMPTY"
   | "RATE_LIMITED"
+  | "AUTH_REQUIRED"
   | "TIMEOUT"
   | "UNAVAILABLE"
   | "INVALID_SCHEMA"
@@ -158,6 +159,14 @@ function collapse<T>(result: AiResult<T>, label: string): T | null {
         `[legal-research/${label}] runtime: ERROR (provider=${result.provider}${
           result.detail ? ` detail=${result.detail}` : ""
         })`,
+      );
+      return null;
+    case "AUTH_REQUIRED":
+      // §11 — Codex CLI installed but ChatGPT not signed in. Log + fail closed.
+      console.warn(
+        `[legal-research/${label}] runtime: AUTH_REQUIRED (provider=${result.provider}${
+          result.detail ? ` detail=${result.detail}` : ""
+        }) — user must complete codex login manually`,
       );
       return null;
     default: {
@@ -327,6 +336,12 @@ function mapHoldingResult<T extends LegalHolding[] | { holdings: LegalHolding[] 
     case "ERROR":
       console.warn(`[legal-research/${label}] holdings ERROR`);
       return { status: "ERROR", holdings: [] };
+    case "AUTH_REQUIRED":
+      // §11 — Codex CLI installed but ChatGPT not signed in. Distinct from
+      // UNAVAILABLE (binary missing) — propagates so callers can surface the
+      // "run codex login" instruction (§37).
+      console.warn(`[legal-research/${label}] holdings AUTH_REQUIRED — codex login needed`);
+      return { status: "AUTH_REQUIRED", holdings: [] };
     default: {
       const _exhaustive: never = result;
       void _exhaustive;
@@ -409,6 +424,10 @@ function mapMaterialFactResult<T extends MaterialFact[] | { facts: MaterialFact[
     case "ERROR":
       console.warn(`[legal-research/${label}] facts ERROR`);
       return { status: "ERROR", facts: [] };
+    case "AUTH_REQUIRED":
+      // §11 — Codex CLI installed but ChatGPT not signed in.
+      console.warn(`[legal-research/${label}] facts AUTH_REQUIRED — codex login needed`);
+      return { status: "AUTH_REQUIRED", facts: [] };
     default: {
       const _exhaustive: never = result;
       void _exhaustive;

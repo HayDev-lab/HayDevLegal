@@ -113,10 +113,14 @@ export interface EvidenceRef {
 }
 
 // ---------------------------------------------------------------------------
-// §38 — CaseAnalysisPack: the closed input bundle handed to the codex CLI.
+// §20 — CaseAnalysisPack: the closed input bundle handed to the codex CLI.
+// Phase 4.1 Finalization: gained `requestId` (recommended) for request-scoped
+// workspace isolation (§21).
 // ---------------------------------------------------------------------------
 
 export interface CaseAnalysisPack {
+  /** Request-scoped id (recommended) — used for /tmp/haydevlegal-case/<id>/ workspace. */
+  requestId?: string;
   /** Original user question. */
   query: string;
   userFacts: UserCaseFact[];
@@ -145,6 +149,8 @@ export interface ApplicablePrecedent {
   evidenceId: string;
   /** The rule / holding extracted from the precedent (grounded in passages). */
   holding: string;
+  /** §22 — additional evidence cited in support of the holding (e.g. concurring cases). */
+  supportingEvidence?: EvidenceRef[];
   /** Factual similarities to the user's case. */
   similarities: string[];
   /** Factual distinctions that may weaken applicability. */
@@ -166,10 +172,10 @@ export interface IssueAnalysis {
 export interface ArgumentMapEntry {
   /** Proposition advanced by the analysis. */
   proposition: string;
-  /** Evidence supporting the proposition. */
-  support: EvidenceRef[];
-  /** Evidence countering the proposition. */
-  counter: EvidenceRef[];
+  /** §22 — evidence supporting the proposition (renamed from `support`). */
+  supportingAuthorities: EvidenceRef[];
+  /** §22 — evidence countering the proposition (renamed from `counter`). */
+  counterAuthorities: EvidenceRef[];
   /** Limitations / caveats on the proposition. */
   limitations: string[];
 }
