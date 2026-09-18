@@ -11,8 +11,9 @@ import { ContradictionsView } from "./ContradictionsView";
 import { CaseSearch } from "./CaseSearch";
 import { AnalysisView } from "./AnalysisView";
 import { DraftsView } from "./DraftsView";
+import { StrategyView } from "./StrategyView";
 
-type Tab = "documents" | "chronology" | "facts" | "evidence" | "contradictions" | "search" | "analysis" | "drafts";
+type Tab = "documents" | "chronology" | "facts" | "evidence" | "contradictions" | "search" | "analysis" | "drafts" | "strategy";
 
 interface Props {
   case_: CaseWorkspaceType;
@@ -28,6 +29,7 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof FileText }> = [
   { id: "search", label: "Որոնում", icon: SearchIcon },
   { id: "analysis", label: "Վերլուծություն", icon: Brain },
   { id: "drafts", label: "Փաստաթղթերի նախագիծ", icon: FileText },
+  { id: "strategy", label: "Ռազմավարություն", icon: Brain },
 ];
 
 export function CaseDetail({ case_: c, onBack }: Props) {
@@ -99,6 +101,7 @@ export function CaseDetail({ case_: c, onBack }: Props) {
         {tab === "search" && <CaseSearch caseId={c.id} />}
         {tab === "analysis" && <AnalysisView caseId={c.id} />}
         {tab === "drafts" && <DraftsView caseId={c.id} />}
+        {tab === "strategy" && <StrategyView caseId={c.id} />}
       </div>
     </div>
   );

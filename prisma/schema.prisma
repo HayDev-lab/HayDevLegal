@@ -80,6 +80,7 @@ model CaseWorkspace {
   issueLinks    LegalIssueLink[]
   analysisResults CaseAnalysisResult[]
   drafts        LegalDraft[]
+  actionCandidates LegalActionCandidate[]
 
   @@index([status])
   @@index([caseType])
@@ -521,4 +522,66 @@ model DraftSection {
 
   @@index([draftId, sectionType])
   @@index([versionId])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 — Legal Strategy Engine Foundation
+// §20 — LegalActionCandidate: a legally supportable procedural action candidate.
+// §17 — Strategy Engine informs; it does NOT choose legal action for the user.
+// No "best option" / ranking / outcome prediction.
+// ---------------------------------------------------------------------------
+
+model LegalActionCandidate {
+  id                    String   @id @default(cuid())
+  caseId                String
+  // MOTION | OBJECTION | APPEAL | CASSATION_APPEAL | CONSTITUTIONAL_COMPLAINT |
+  // ECHR_STEP | EVIDENCE_MOTION | EXCLUSION_ARGUMENT | RELEASE_MOTION |
+  // DEADLINE_RESTORATION_REQUEST | DAMAGES_CLAIM | ADMINISTRATIVE_CHALLENGE | OTHER
+  actionType            String
+  title                  String
+  description            String?
+  proceduralStage       String?
+  // JSON-serialized string[] of legal basis (article references, statute names)
+  legalBasis            String   @default("[]")
+  // JSON-serialized Prerequisite[]
+  prerequisites         String   @default("[]")
+  // JSON-serialized string[] of satisfied prerequisite ids
+  satisfiedPrerequisites String  @default("[]")
+  // JSON-serialized string[] of unsatisfied prerequisite ids
+  unsatisfiedPrerequisites String @default("[]")
+  // JSON-serialized string[] of unknown prerequisite ids
+  unknownPrerequisites String   @default("[]")
+  // JSON-serialized string[] of supporting fact ids (F1, F2...)
+  supportingFacts       String   @default("[]")
+  // JSON-serialized EvidenceRef[]
+  supportingEvidence    String   @default("[]")
+  // JSON-serialized EvidenceGap[]
+  evidenceGaps          String   @default("[]")
+  // JSON-serialized string[] of supporting authority ids (L1, C1, CC1, E1...)
+  supportingAuthorities String   @default("[]")
+  // JSON-serialized string[] of counter-authority ids
+  counterAuthorities    String   @default("[]")
+  // JSON-serialized string[] of distinguishing factors
+  distinguishingFactors String   @default("[]")
+  // VERIFIED | CALCULATED_FROM_VERIFIED_RULE | DISPUTED | UNKNOWN | EXPIRED | POTENTIALLY_EXPIRED
+  temporalStatus        String   @default("UNKNOWN")
+  // JSON-serialized string[] of limitations
+  limitations           String   @default("[]")
+  proceduralEffect      String?
+  // AVAILABLE_ON_CURRENT_RECORD | POTENTIALLY_AVAILABLE | BLOCKED_BY_MISSING_PREREQUISITE |
+  // TEMPORALLY_UNCERTAIN | NOT_AVAILABLE_ON_CURRENT_RECORD
+  availabilityStatus    String   @default("NOT_AVAILABLE_ON_CURRENT_RECORD")
+  // VERIFIED | PARTIAL | UNRESOLVED
+  verificationStatus    String   @default("UNRESOLVED")
+  // §34 — Maps to Phase 6 document type (MOTION→MOTION, APPEAL→APPEAL, etc.)
+  draftDocumentType     String?
+  // JSON-serialized IssueLinkId[] — which legal issues this action addresses
+  relatedIssues         String   @default("[]")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  case CaseWorkspace @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, actionType])
+  @@index([caseId, availabilityStatus])
 }
