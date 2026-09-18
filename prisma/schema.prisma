@@ -211,6 +211,14 @@ model ChronologyEvent {
   // disagree on date/details, this flag is set (§8 — don't silently choose).
   hasConflict     Boolean  @default(false)
   conflictDetail  String?
+  // §15 Phase 5.1 — Chronology review workflow.
+  // UNREVIEWED | CONFIRMED | EDITED | REJECTED
+  reviewStatus    String   @default("UNREVIEWED")
+  reviewedAt      DateTime?
+  reviewedBy      String?
+  // Preserve original extracted title/description (immutable).
+  originalTitle   String?
+  originalDescription String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -218,6 +226,7 @@ model ChronologyEvent {
 
   @@index([caseId, date])
   @@index([caseId, eventType])
+  @@index([caseId, reviewStatus])
 }
 
 // §9 — CaseEntity: people/organizations with canonical name + aliases.
@@ -260,6 +269,23 @@ model CaseFact {
   materiality         String   @default("MEDIUM")
   // Whether this fact was user-entered (begins as ALLEGED per §10) or AI-proposed.
   source              String   @default("USER")
+  // §13 Phase 5.1 — Human review workflow fields.
+  // Preserve original extracted proposition (immutable).
+  originalProposition  String?
+  // currentProposition = proposition (the live, edited version). When null,
+  // originalProposition is used as currentProposition. When proposition is
+  // edited, originalProposition preserves the extracted text.
+  // SYSTEM (AI-extracted) | USER (manual entry)
+  createdBy           String   @default("USER")
+  // UNREVIEWED | CONFIRMED | EDITED | REJECTED | USER_CONFIRMED
+  // §13: USER_CONFIRMED ≠ DOCUMENT_VERIFIED — human confirmation is NOT the
+  // same as documentary verification. Manual facts without evidence must
+  // not default to VERIFIED.
+  reviewStatus        String   @default("UNREVIEWED")
+  reviewedAt          DateTime?
+  reviewedBy          String?
+  // Bounded audit: previous proposition value (for EDITED status only).
+  previousProposition String?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -268,6 +294,7 @@ model CaseFact {
 
   @@index([caseId, status])
   @@index([caseId, materiality])
+  @@index([caseId, reviewStatus])
 }
 
 // §11 — CaseEvidenceLink: persisted FACT ↔ EVIDENCE links.
@@ -330,6 +357,11 @@ model CaseContradiction {
   // JSON-serialized { claimId?, proposition, source } for side B.
   claimB            String
   reason            String?
+  // §16 Phase 5.1 — Contradiction review workflow.
+  // OPEN | EXPLAINED | RESOLVED (status field already has this; add review metadata)
+  resolutionNote    String?
+  reviewedAt        DateTime?
+  reviewedBy        String?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 

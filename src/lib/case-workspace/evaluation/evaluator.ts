@@ -45,9 +45,8 @@ import type {
 } from "../research/types";
 import { parseJsonField } from "../research/types";
 import type { EvidenceRef } from "@/lib/case-workspace/types";
-import { runDeterministicAnalysis } from "../analysis/deterministic-analysis";
 import { buildCaseAnalysisPack } from "../analysis/case-analysis-pack";
-import { runCodexCaseAnalysis } from "../analysis/codex-analysis";
+import { runDeterministicAnalysis } from "../analysis/deterministic-analysis";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -568,40 +567,13 @@ async function checkIncrementalNoReprocess(caseId: string): Promise<EvalCheck> {
 // ---------------------------------------------------------------------------
 
 async function checkDeterministicWorksWithoutCodex(caseId: string): Promise<EvalCheck> {
-  // Probe Codex CLI. If it's HEALTHY, we can't prove the negative — skip
-  // the check (return passed=true with a "skip" detail). If it's
-  // AUTH_REQUIRED / UNAVAILABLE, we run the deterministic analysis and
-  // verify it succeeds.
-  try {
-    const { getAiRuntime } = await import("@/lib/ai-runtime");
-    const runtime = getAiRuntime();
-    const provider = runtime.provider("codex-cli");
-    if (provider) {
-      const health = await provider.health();
-      if (health.status === "HEALTHY") {
-        return {
-          name: "deterministic_works_without_codex",
-          passed: true,
-          detail:
-            "Codex is HEALTHY — check skipped (cannot prove the negative; the deterministic path is exercised in test fixtures).",
-        };
-      }
-    }
-  } catch {
-    // fall through — provider unavailable, run deterministic.
-  }
-
+  // §15, §26 — Verify deterministic analysis works WITHOUT Codex.
+  // We do NOT probe Codex here (the check is about deterministic fallback,
+  // not Codex availability). If Codex is available, the deterministic path
+  // is still exercised by this check because we call runDeterministicAnalysis
+  // directly (bypassing the router's Codex-first routing).
   try {
     const pack = await buildCaseAnalysisPack(caseId, { query: "deterministic check" });
-    const codexResult = await runCodexCaseAnalysis(caseId, pack);
-    if (codexResult.status !== "AUTH_REQUIRED" && codexResult.status !== "RATE_LIMITED" && codexResult.status !== "UNAVAILABLE" && codexResult.status !== "BLOCKED_EXTERNAL_QUOTA") {
-      // Codex actually succeeded — we can't prove the negative.
-      return {
-        name: "deterministic_works_without_codex",
-        passed: true,
-        detail: `Codex returned status=${codexResult.status}; deterministic path not exercised.`,
-      };
-    }
     const det = await runDeterministicAnalysis(caseId, pack);
     const ok =
       det.status === "DETERMINISTIC_ONLY" &&

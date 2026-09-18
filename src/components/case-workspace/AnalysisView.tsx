@@ -1,7 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Brain, Loader2, Play, FileText } from "lucide-react";
+import {
+  Brain,
+  Loader2,
+  Play,
+  FileText,
+  Eye,
+} from "lucide-react";
+import { PackInspector } from "./PackInspector";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface AnalysisResult {
   id: string;
@@ -13,31 +24,44 @@ interface AnalysisResult {
   createdAt: string;
 }
 
-export function AnalysisView({ caseId }: { caseId: string }) {
+interface Props {
+  caseId: string;
+}
+
+export function AnalysisView({ caseId }: Props) {
   const [results, setResults] = useState<AnalysisResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"auto" | "codex" | "deterministic">("auto");
   const [error, setError] = useState<string | undefined>();
+  const [inspected, setInspected] = useState(false);
+  const [showInspector, setShowInspector] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(undefined);
     try {
       const r = await fetch(`/api/cases/${caseId}/analysis`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = (await r.json()) as { results: AnalysisResult[] };
       setResults(data.results ?? []);
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    finally { setLoading(false); }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
   }, [caseId]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
-  async function runAnalysis(e: React.FormEvent) {
-    e.preventDefault();
+  async function runAnalysis(e?: React.FormEvent) {
+    e?.preventDefault();
     if (!query.trim()) return;
-    setRunning(true); setError(undefined);
+    setRunning(true);
+    setError(undefined);
     try {
       const r = await fetch(`/api/cases/${caseId}/analysis`, {
         method: "POST",
@@ -49,18 +73,44 @@ export function AnalysisView({ caseId }: { caseId: string }) {
         throw new Error(err.error ?? `HTTP ${r.status}`);
       }
       setQuery("");
+      setInspected(false); // reset for next run
       await load();
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    finally { setRunning(false); }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
   }
 
   return (
     <div>
-      <form onSubmit={runAnalysis} className="mb-6 rounded-xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-700 dark:bg-neutral-900/50">
-        <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-neutral-900 dark:text-neutral-100">
-          <Brain className="h-4 w-4" />
-          Գործի խորքային վերլուծություն
-        </h3>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!inspected) {
+            // §19 — encourage inspection before running. Soft gate: open the
+            // inspector instead of running.
+            setShowInspector(true);
+            return;
+          }
+          void runAnalysis(e);
+        }}
+        className="mb-6 rounded-xl border border-neutral-200 bg-neutral-50 p-4 dark:border-neutral-700 dark:bg-neutral-900/50"
+      >
+        <div className="mb-3 flex items-center justify-between gap-2">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-neutral-900 dark:text-neutral-100">
+            <Brain className="h-4 w-4" />
+            Գործի խորքային վերլուծություն
+          </h3>
+          <button
+            type="button"
+            onClick={() => setShowInspector(true)}
+            className="inline-flex items-center gap-1 rounded-md border border-neutral-300 px-2.5 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+          >
+            <Eye className="h-3.5 w-3.5" />
+            Տեսնել փաթեթը
+          </button>
+        </div>
         <textarea
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -87,21 +137,40 @@ export function AnalysisView({ caseId }: { caseId: string }) {
             type="submit"
             disabled={running || !query.trim()}
             className="inline-flex items-center gap-1.5 rounded-md bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+            title={inspected ? undefined : "Նախ ստուգեք փաթեթը"}
           >
             {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            {running ? "Վերլուծվում է..." : "Վերլուծել"}
+            {running ? "Վերլուծվում է..." : inspected ? "Վերլուծել" : "Տեսնել փաթեթը նախ"}
           </button>
+          {inspected && (
+            <span className="text-[11px] text-emerald-700 dark:text-emerald-400">
+              ✓ Փաթեթը ստուգված է — պատրաստ է գործարկման
+            </span>
+          )}
         </div>
         <p className="mt-2 text-[11px] text-neutral-500 dark:text-neutral-500">
           auto՝ Codex (եթե հասանելի է), այլապես deterministic վերլուծություն ·
-          deterministic՝ միշտ որոշունակ վերլուծություն (առանց LLM-ի)
+          deterministic՝ միշտ որոշունակ վերլուծություն (առանց LLM-ի) ·
+          §19 — փաթեթը ստուգեք նախքան գործարկումը (counts, ոչ chain-of-thought)
         </p>
       </form>
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
+      {error && (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-900 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-200">
+          {error}
+          <button
+            onClick={() => setError(undefined)}
+            className="ml-2 underline underline-offset-2"
+          >
+            փակել
+          </button>
+        </div>
+      )}
 
       {loading ? (
-        <p className="py-8 text-center text-sm text-neutral-500"><Loader2 className="inline h-4 w-4 animate-spin" /> Բեռնվում է...</p>
+        <p className="py-8 text-center text-sm text-neutral-500">
+          <Loader2 className="inline h-4 w-4 animate-spin" /> Բեռնվում է…
+        </p>
       ) : results.length === 0 ? (
         <div className="rounded-xl border border-dashed border-neutral-300 p-12 text-center dark:border-neutral-700">
           <FileText className="mx-auto h-10 w-10 text-neutral-400" />
@@ -112,20 +181,49 @@ export function AnalysisView({ caseId }: { caseId: string }) {
       ) : (
         <div className="space-y-3">
           {results.map((r) => (
-            <div key={r.id} className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-700 dark:bg-neutral-900">
+            <div
+              key={r.id}
+              className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-700 dark:bg-neutral-900"
+            >
               <div className="mb-2 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <StatusBadge status={r.status} />
-                  {r.provider && <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">{r.provider}</span>}
+                  {r.provider && (
+                    <span className="rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400">
+                      {r.provider}
+                    </span>
+                  )}
                 </div>
-                <time className="text-[10px] text-neutral-500 dark:text-neutral-500">{new Date(r.createdAt).toLocaleString()}</time>
+                <time className="text-[10px] text-neutral-500 dark:text-neutral-500">
+                  {new Date(r.createdAt).toLocaleString()}
+                </time>
               </div>
-              <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-500">request_id: {r.requestId}</div>
-              {r.errorDetail && <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">{r.errorDetail}</p>}
+              <div className="text-[10px] font-mono text-neutral-500 dark:text-neutral-500">
+                request_id: {r.requestId}
+              </div>
+              {r.errorDetail && (
+                <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                  {r.errorDetail}
+                </p>
+              )}
             </div>
           ))}
         </div>
       )}
+
+      {/* §19 Pack inspector modal */}
+      <PackInspector
+        caseId={caseId}
+        open={showInspector}
+        onClose={() => setShowInspector(false)}
+        onRun={() => {
+          setInspected(true);
+          // After inspection, immediately attempt the run.
+          if (query.trim()) {
+            void runAnalysis();
+          }
+        }}
+      />
     </div>
   );
 }
@@ -140,5 +238,9 @@ function StatusBadge({ status }: { status: string }) {
     BLOCKED_EXTERNAL_QUOTA: "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300",
     FAILED: "bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300",
   };
-  return <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${colors[status] ?? "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"}`}>{status}</span>;
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${colors[status] ?? "bg-neutral-100 text-neutral-600 dark:bg-neutral-800 dark:text-neutral-400"}`}>
+      {status}
+    </span>
+  );
 }
