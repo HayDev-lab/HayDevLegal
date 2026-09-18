@@ -272,11 +272,16 @@ async function parseDocx(
 ): Promise<ParseResult> {
   try {
     const mammoth = await import("mammoth");
-    // mammoth expects an ArrayBuffer (or Buffer). Copy bytes into a fresh
-    // ArrayBuffer to avoid the Uint8Array->Buffer footgun.
-    const ab = ensureArrayBuffer(bytes);
+    // mammoth 1.12.x Node.js runtime expects `buffer: Buffer` (the
+    // TypeScript types declare `arrayBuffer` for BrowserInput, but the
+    // runtime `openZip` only routes via `path` / `buffer` / `file`).
+    // Phase 5.1 §25.B stress test surfaced this — the previous call
+    // `extractRawText({ arrayBuffer })` threw "Could not find file in
+    // options" at runtime, so DOCX parsing always fell into the catch
+    // branch and returned extractionStatus=FAILED + requiresOcr=true.
+    const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const result = await withTimeout(
-      mammoth.extractRawText({ arrayBuffer: ab }),
+      mammoth.extractRawText({ buffer: buf }),
       opts.timeoutMs,
     );
     const text = result?.value ?? "";
@@ -326,9 +331,9 @@ async function parseDoc(
   // the operator can convert it. We never pretend success.
   try {
     const mammoth = await import("mammoth");
-    const ab = ensureArrayBuffer(bytes);
+    const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const result = await withTimeout(
-      mammoth.extractRawText({ arrayBuffer: ab }),
+      mammoth.extractRawText({ buffer: buf }),
       opts.timeoutMs,
     );
     const text = result?.value ?? "";
@@ -436,17 +441,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-/** Copy bytes into a fresh ArrayBuffer (mammoth's input contract). */
-function ensureArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  // Always copy into a fresh ArrayBuffer. The cheap zero-copy path
-  // (`bytes.buffer` when perfectly aligned) is unsafe because TypeScript
-  // narrows `Uint8Array.buffer` to `ArrayBufferLike` (which may be a
-  // SharedArrayBuffer); mammoth's `ArrayBufferInput` expects an ArrayBuffer
-  // strictly. Copying is correct and bounded by the per-file size cap.
-  const ab = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(ab).set(bytes);
-  return ab;
-}
+// (Removed `ensureArrayBuffer` — mammoth 1.12.x Node.js runtime expects a
+// `Buffer` (via `openZip`'s `buffer` branch), not an `arrayBuffer: ArrayBuffer`.
+// The Phase 5.1 §25.B stress test caught this. See parseDocx/parseDoc above.)
 
 // ---------------------------------------------------------------------------
 // Misc helpers exported for tests / inspection

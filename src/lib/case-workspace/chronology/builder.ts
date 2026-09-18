@@ -229,43 +229,146 @@ export async function buildChronologyForCase(
     return 0;
   });
 
-  // 6. Persist: replace DOCUMENT_VERIFIED events for this case (preserve
-  //    USER_ALLEGED user-entered events).
-  await db.chronologyEvent.deleteMany({
+  // 6. Persist — INCREMENTAL per Phase 5.1 §25.H:
+  //    "new volume processes only new/changed material except genuinely
+  //    affected derived views". When a new volume is added, rebuild the
+  //    chronology but PRESERVE the IDs of unchanged events from the
+  //    existing volumes — don't delete + recreate them.
+  //
+  //    Algorithm:
+  //    a. Load existing DOCUMENT_VERIFIED events for this case.
+  //    b. For each new merged event, find a matching existing event (same
+  //       date + Jaccard title > 0.6 — same heuristic as the dedup step).
+  //    c. If matched: UPDATE the existing row (preserve id) with new
+  //       evidenceRefs / hasConflict / conflictDetail. Preserve the
+  //       immutable originalTitle / originalDescription on first creation
+  //       (they're nullable; the first rebuild stamps them; subsequent
+  //       rebuilds leave them alone).
+  //    d. If unmatched: CREATE a new row.
+  //    e. Delete existing events that no longer have a corresponding new
+  //       merged event (the source pages were removed).
+  //
+  //    This is the §25.H "recompute affected views only" hard requirement:
+  //    IDs of events whose (date, title) hasn't changed are preserved.
+  const existingRows = await db.chronologyEvent.findMany({
     where: { caseId, verification: "DOCUMENT_VERIFIED" },
+    select: {
+      id: true,
+      date: true,
+      title: true,
+    },
   });
+  // Mark each existing row as "matched" once we pair it with a new merged
+  // event. Anything still unmatched at the end gets deleted.
+  const matchedExistingIds = new Set<string>();
+  // Reuse a single tokenization per existing row (avoid recomputing in
+  // the inner loop).
+  const existingTokens = existingRows.map((r) => ({
+    id: r.id,
+    date: r.date,
+    title: r.title,
+    titleTokens: tokenize(r.title),
+  }));
+
   const created: ChronologyEventRecord[] = [];
   for (const e of merged) {
-    const rec = await db.chronologyEvent.create({
-      data: {
-        caseId,
-        date: e.date,
-        originalDateText: e.originalDateText,
-        dateStatus: e.dateStatus,
-        eventType: e.eventType,
-        title: e.title,
-        description: e.description,
-        participants: "[]",
-        evidenceRefs: JSON.stringify(e.evidenceRefs),
-        verification: e.verification,
-        hasConflict: e.hasConflict,
-        conflictDetail: e.conflictDetail,
-      },
-    });
-    created.push({
-      id: rec.id,
-      caseId: rec.caseId,
-      date: rec.date,
-      originalDateText: rec.originalDateText,
-      dateStatus: rec.dateStatus as DateStatus,
-      eventType: rec.eventType as ChronologyEventType,
-      title: rec.title,
-      description: rec.description,
-      participants: [],
-      evidenceRefs: e.evidenceRefs,
-      verification: e.verification as Verification,
-      hasConflict: rec.hasConflict,
-      conflictDetail: rec.conflictDetail,
+    const newTitleTokens = tokenize(e.title);
+    // Find the first unmatched existing event with same date + similar title.
+    const match = existingTokens.find(
+      (ex) =>
+        !matchedExistingIds.has(ex.id) &&
+        sameDate(ex.date, e.date) &&
+        jaccard(ex.titleTokens, newTitleTokens) > 0.6,
+    );
+
+    if (match) {
+      // §25.H — preserve the id; update mutable fields.
+      matchedExistingIds.add(match.id);
+      const updated = await db.chronologyEvent.update({
+        where: { id: match.id },
+        data: {
+          // Live title/description track the latest extraction. The
+          // immutable originals are stamped on first creation (below);
+          // subsequent rebuilds leave them alone.
+          title: e.title,
+          description: e.description,
+          evidenceRefs: JSON.stringify(e.evidenceRefs),
+          hasConflict: e.hasConflict,
+          conflictDetail: e.conflictDetail,
+          // date fields can change too (dateStatus upgrade when a
+          // previously-UNKNOWN date gets parsed in a later volume).
+          date: e.date,
+          originalDateText: e.originalDateText,
+          dateStatus: e.dateStatus,
+          eventType: e.eventType,
+        },
+      });
+      created.push({
+        id: updated.id,
+        caseId: updated.caseId,
+        date: updated.date,
+        originalDateText: updated.originalDateText,
+        dateStatus: updated.dateStatus as DateStatus,
+        eventType: updated.eventType as ChronologyEventType,
+        title: updated.title,
+        description: updated.description,
+        participants: [],
+        evidenceRefs: e.evidenceRefs,
+        verification: e.verification as Verification,
+        hasConflict: updated.hasConflict,
+        conflictDetail: updated.conflictDetail,
+      });
+    } else {
+      // New event — no matching existing row. Create it. Stamp the
+      // immutable originalTitle / originalDescription on first creation
+      // so the §13/§15 review workflow can later show "original vs
+      // current" diffs if the operator edits the live title.
+      const rec = await db.chronologyEvent.create({
+        data: {
+          caseId,
+          date: e.date,
+          originalDateText: e.originalDateText,
+          dateStatus: e.dateStatus,
+          eventType: e.eventType,
+          title: e.title,
+          description: e.description,
+          participants: "[]",
+          evidenceRefs: JSON.stringify(e.evidenceRefs),
+          verification: e.verification,
+          hasConflict: e.hasConflict,
+          conflictDetail: e.conflictDetail,
+          // §15 Phase 5.1 — stamp immutable originals on first creation.
+          originalTitle: e.title,
+          originalDescription: e.description,
+        },
+      });
+      created.push({
+        id: rec.id,
+        caseId: rec.caseId,
+        date: rec.date,
+        originalDateText: rec.originalDateText,
+        dateStatus: rec.dateStatus as DateStatus,
+        eventType: rec.eventType as ChronologyEventType,
+        title: rec.title,
+        description: rec.description,
+        participants: [],
+        evidenceRefs: e.evidenceRefs,
+        verification: e.verification as Verification,
+        hasConflict: rec.hasConflict,
+        conflictDetail: rec.conflictDetail,
+      });
+    }
+  }
+
+  // Delete existing DOCUMENT_VERIFIED events that weren't matched —
+  // their source pages no longer produce the same date+title signature
+  // (either the page text changed, or the source document was removed).
+  const staleIds = existingTokens
+    .filter((ex) => !matchedExistingIds.has(ex.id))
+    .map((ex) => ex.id);
+  if (staleIds.length > 0) {
+    await db.chronologyEvent.deleteMany({
+      where: { id: { in: staleIds } },
     });
   }
 
