@@ -22,6 +22,16 @@ export { exportDocx } from "@/lib/legal-drafting/export/docx";
 export { exportPdf } from "@/lib/legal-drafting/export/pdf";
 export { exportTxt } from "@/lib/legal-drafting/export/txt";
 
+// §49 — Court-ready placeholder + internal-ID leak checks.
+export {
+  checkCourtReady,
+  checkInternalIdLeak,
+  checkPlaceholders,
+  type CourtReadyCheckResult,
+  type InternalIdLeakResult,
+  type PlaceholderCheckResult,
+} from "@/lib/legal-drafting/export/placeholder-check";
+
 export type ExportFormat = "docx" | "pdf" | "txt";
 
 /**

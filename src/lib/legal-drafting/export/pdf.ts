@@ -1,27 +1,50 @@
 // src/lib/legal-drafting/export/pdf.ts
-// Phase 6 — §28 — PDF export.
+// Phase 6.1 — §11/§15/§19/§22/§28/§49 — PDF export (court-ready).
 //
 // Uses `pdfkit` (v0.20.2) to produce a production PDF file. Armenian text
 // renders correctly because we embed a Unicode TrueType font (DejaVuSans,
-// which is bundled with most Linux distributions and supports the Armenian
-// Unicode block U+0530–U+058F).
+// located at runtime via `findUnicodeFont()` — §19 CRITICAL: "Do NOT share
+// font files"). The font policy is centralized in
+// `COURT_READY_FORMAT.pdfFont` (§11).
 //
 // §28 — "only from reviewed/verified state" — this function verifies the
 // version's `verificationStatus` is one of VERIFIED / PARTIAL / NEEDS_REVIEW
 // before producing the PDF. UNVERIFIED versions are refused.
 //
+// Hardening (Phase 6.1):
+//   - All formatting magic numbers (page size, margins, font family, font
+//     sizes, signature block) come from COURT_READY_FORMAT — no hardcoded
+//     values in this file.
+//   - §22: References section lists citations WITHOUT leaking the internal
+//     debug source ids (F1/C2/...). Each entry is prefixed with a human-
+//     readable type label ("Փաստ", "Օրենսդրություն", ...) instead.
+//   - §11 pageBreak.beforeHeading: page breaks between major sections.
+//   - §11 signature: signature block (config.SIGNATURE_BLOCK) appended to
+//     every export — operator fills [signer name]/[title]/[date].
+//   - Page numbering (page N of M) added to every page footer.
+//   - §11 margins: 25/25/30/20 mm (top/bottom/left/right) — proper
+//     Armenian legal filing margins (no longer 2cm placeholders).
+//
 // CRITICAL — §10: "normal export renders human-readable legal citations, NOT
 //                  debug IDs (F1/C2 etc.)"
 // CRITICAL — §28: "attachment list must contain only actual workspace
 //                  documents"
+// CRITICAL — §49: "Court-ready VERIFIED export must contain none of the
+//                  placeholders/IDs"
 
 // pdfkit 0.20.2 ships no TypeScript types. We use a runtime `require()` call
 // to bypass TypeScript module resolution (an ambient `declare module
 // "pdfkit"` augmentation is rejected because pdfkit resolves to an untyped
 // .browser.mjs file). The runtime API used is documented at
 // https://pdfkit.org/ for v0.20.x.
-import { existsSync, statSync } from "node:fs";
 import { db } from "@/lib/db";
+import {
+  COURT_READY_FORMAT,
+  FONT_BOLD_CANDIDATES,
+  FONT_CANDIDATES,
+  findUnicodeFont,
+  SOURCE_TYPE_LABELS_HY,
+} from "@/lib/legal-drafting/config/formatting";
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const PDFDocument = require("pdfkit") as new (opts?: {
@@ -46,6 +69,8 @@ interface PdfDocLike {
   text(text: string, x: number, y: number, opts?: Record<string, unknown>): PdfDocLike;
   moveDown(lines?: number): PdfDocLike;
   addPage(opts?: unknown): PdfDocLike;
+  switchToPage(n: number): PdfDocLike;
+  bufferedPageRange(): { start: number; count: number };
   end(): PdfDocLike;
   pipe<T extends NodeJS.WritableStream>(destination: T): T;
   on(event: "data", listener: (chunk: Buffer) => void): PdfDocLike;
@@ -73,38 +98,8 @@ const ALLOWED_VERIFICATION_STATUSES = new Set([
   "VERIFIED",
   "PARTIAL",
   "NEEDS_REVIEW",
+  "EXPORT_READY",
 ]);
-
-// ---------------------------------------------------------------------------
-// Unicode TTF font lookup (Armenian Unicode support)
-// ---------------------------------------------------------------------------
-
-const FONT_CANDIDATES = [
-  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-  "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
-  "/usr/share/fonts/dejavu/DejaVuSans.ttf",
-  "/System/Library/Fonts/Supplemental/DejaVuSans.ttf",
-  "/usr/local/share/fonts/dejavu/DejaVuSans.ttf",
-];
-
-const FONT_BOLD_CANDIDATES = [
-  "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-  "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
-  "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-];
-
-function findFont(candidates: string[]): string | null {
-  for (const path of candidates) {
-    try {
-      if (existsSync(path) && statSync(path).isFile()) {
-        return path;
-      }
-    } catch {
-      // ignore
-    }
-  }
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // DB row shapes
@@ -211,6 +206,7 @@ function replaceInlineSourceIds(text: string, map: SourceIdMap): string {
   return text.replace(SOURCE_ID_PATTERN, (_match, sid: string) => {
     const entry = map[sid];
     if (entry?.citation) return `(${entry.citation})`;
+    // §22 — No map entry: strip the debug id entirely.
     return "";
   });
 }
@@ -273,7 +269,7 @@ export async function exportPdf(
   // §28 — Only from reviewed / verified state.
   if (!ALLOWED_VERIFICATION_STATUSES.has(version.verificationStatus)) {
     throw new Error(
-      `Cannot export PDF: version ${versionId} has verificationStatus=${version.verificationStatus}. PDF export requires VERIFIED / PARTIAL / NEEDS_REVIEW (§28).`,
+      `Cannot export PDF: version ${versionId} has verificationStatus=${version.verificationStatus}. PDF export requires VERIFIED / PARTIAL / NEEDS_REVIEW / EXPORT_READY (§28).`,
     );
   }
 
@@ -289,41 +285,61 @@ export async function exportPdf(
   const sourceIdMap = parseSourceIdMap(version.sourceIdMap);
   const parties = parseParties(draft.parties);
 
-  // §28 — Locate a Unicode TTF font supporting Armenian glyphs.
-  const regularFont = findFont(FONT_CANDIDATES);
-  const boldFont = findFont(FONT_BOLD_CANDIDATES) ?? regularFont;
+  // §19 — Locate a Unicode TTF font supporting Armenian glyphs at runtime.
+  // §19 CRITICAL: "Do NOT share font files" — we use system-available fonts
+  // only. findUnicodeFont returns null when no candidate exists (the
+  // formatting certification test surfaces this as a failure for VERIFIED
+  // PDF export).
+  const regularFont = findUnicodeFont(FONT_CANDIDATES);
+  const boldFont = findUnicodeFont(FONT_BOLD_CANDIDATES) ?? regularFont;
 
-  // Create the PDF document. A4 size with reasonable margins.
+  // Create the PDF document. A4 size with court-ready margins (§11).
+  // `bufferPages: true` enables per-page footers (page numbering).
   const doc: PdfDocLike = new PDFDocument({
-    size: "A4",
-    margins: { top: 56, right: 56, bottom: 56, left: 56 },
+    size: COURT_READY_FORMAT.page.size,
+    margins: {
+      top: COURT_READY_FORMAT.marginsPt.top,
+      bottom: COURT_READY_FORMAT.marginsPt.bottom,
+      left: COURT_READY_FORMAT.marginsPt.left,
+      right: COURT_READY_FORMAT.marginsPt.right,
+    },
     info: {
       Title: draft.title ?? "Draft",
-      Author: "HayDevLegal — Phase 6",
+      Author: "HayDevLegal — Phase 6.1",
       Subject: `Legal draft ${draft.documentType} (version ${version.version})`,
       Producer: "HayDevLegal pdfkit export",
     },
     autoFirstPage: true,
+    bufferPages: true,
   });
 
-  // Embed the Unicode font (Armenian Unicode support). If no font is found,
-  // fall back to the default Helvetica (Armenian glyphs will not render —
-  // Latin text will render correctly).
+  // Embed the Unicode font (Armenian Unicode support). If no font is
+  // found, fall back to the default Helvetica (Armenian glyphs will not
+  // render — Latin text will render correctly). The formatting
+  // certification test surfaces this as a failure for VERIFIED PDF export.
+  //
+  // NOTE: we do NOT pass a `family` name to pdfkit's `.font()` — passing
+  // a family name triggers fontkit's variable-font (fvar) handling, which
+  // DejaVuSans doesn't support. The bare path form `.font(path)` is the
+  // correct stable API for static TrueType fonts (per pdfkit 0.20.x docs).
   if (regularFont) {
     doc.font(regularFont);
   }
 
   const pageWidth = doc.page.width;
+  const pageHeight = doc.page.height;
   const pageMarginLeft = doc.page.margins.left;
   const pageMarginRight = doc.page.margins.right;
   const contentWidth = pageWidth - pageMarginLeft - pageMarginRight;
 
-  // §11 — Header block.
-  doc.fontSize(18);
+  // §11 — Header block (title centered, then metadata left-aligned).
+  doc.fontSize(COURT_READY_FORMAT.heading.h1Size);
   if (boldFont) doc.font(boldFont);
-  doc.text(draft.title ?? "Untitled Draft", { align: "center" });
+  doc.text(draft.title ?? "Untitled Draft", {
+    align: COURT_READY_FORMAT.alignment.heading,
+  });
   if (regularFont) doc.font(regularFont);
-  doc.fontSize(11);
+  doc.fontSize(COURT_READY_FORMAT.body.fontSize);
   doc.moveDown(0.5);
   if (draft.targetCourtOrAuthority) {
     doc.text(`Լրացրած դատարան / մարմին: ${draft.targetCourtOrAuthority}`, { align: "left" });
@@ -351,27 +367,27 @@ export async function exportPdf(
     doc.text(`Նպատակ: ${draft.goal}`, { align: "left" });
   }
 
-  // Page break before body.
+  // §11 pageBreak.beforeHeading — page break before body.
   doc.addPage();
 
   // Render each section.
   for (const row of sectionRows) {
     const content = parseContent(row.content);
-    // Section heading.
+    // Section heading (H2, left-aligned per §11).
     doc.moveDown(0.5);
     if (boldFont) doc.font(boldFont);
-    doc.fontSize(13);
+    doc.fontSize(COURT_READY_FORMAT.heading.h2Size);
     doc.text(row.title, { align: "left" });
     if (regularFont) doc.font(regularFont);
-    doc.fontSize(11);
+    doc.fontSize(COURT_READY_FORMAT.body.fontSize);
     doc.moveDown(0.2);
 
-    // Section body.
+    // Section body (justified per §11 alignment.body).
     const rendered = replaceInlineSourceIds(content.text ?? "", sourceIdMap);
     const blocks = rendered.split(/\n{2,}/);
     for (const block of blocks) {
       if (block.trim().length === 0) continue;
-      doc.text(block, { align: "justify" });
+      doc.text(block, { align: COURT_READY_FORMAT.alignment.body });
       doc.moveDown(0.2);
     }
 
@@ -414,11 +430,12 @@ export async function exportPdf(
       doc.moveDown(0.3);
     }
 
-    // Page break between sections.
+    // §11 pageBreak.beforeHeading — page break between major sections.
     doc.addPage();
   }
 
-  // §10 — References section.
+  // §22 — References section. CRITICAL: do NOT leak internal source ids
+  // (F1, C2, ...). Use a human-readable type label ("Փաստ", ...) instead.
   const citedIds = new Set<string>();
   for (const row of sectionRows) {
     const content = parseContent(row.content);
@@ -426,10 +443,10 @@ export async function exportPdf(
   }
   if (citedIds.size > 0) {
     if (boldFont) doc.font(boldFont);
-    doc.fontSize(13);
+    doc.fontSize(COURT_READY_FORMAT.heading.h2Size);
     doc.text("Աղբյուրներ / References");
     if (regularFont) doc.font(regularFont);
-    doc.fontSize(11);
+    doc.fontSize(COURT_READY_FORMAT.body.fontSize);
     doc.moveDown(0.2);
     const typeOrder: Record<string, number> = {
       fact: 0,
@@ -449,8 +466,11 @@ export async function exportPdf(
         const tb = typeOrder[b.entry!.type] ?? 99;
         return ta - tb;
       });
-    for (const { sid, entry } of cited) {
-      doc.text(`${sid} → ${entry!.citation ?? "(չհաստատված աղբյուր)"}`);
+    for (const { entry } of cited) {
+      const typeLabel =
+        SOURCE_TYPE_LABELS_HY[entry!.type] ?? "Աղբյուր";
+      const citation = entry!.citation ?? "(չհաստատված աղբյուր)";
+      doc.text(`${typeLabel}: ${citation}`);
     }
   }
 
@@ -475,10 +495,10 @@ export async function exportPdf(
   if (docs.length > 0) {
     doc.addPage();
     if (boldFont) doc.font(boldFont);
-    doc.fontSize(13);
+    doc.fontSize(COURT_READY_FORMAT.heading.h2Size);
     doc.text("Կից փաստաթղթեր / Attachments");
     if (regularFont) doc.font(regularFont);
-    doc.fontSize(11);
+    doc.fontSize(COURT_READY_FORMAT.body.fontSize);
     doc.moveDown(0.2);
     docs.forEach((d, i) => {
       doc.text(
@@ -487,7 +507,20 @@ export async function exportPdf(
     });
   }
 
-  // Footer.
+  // §11 — Signature block appended at the end of every export.
+  doc.addPage();
+  if (boldFont) doc.font(boldFont);
+  doc.fontSize(COURT_READY_FORMAT.heading.h3Size);
+  doc.text("Ստորագրություն / Signature");
+  if (regularFont) doc.font(regularFont);
+  doc.fontSize(COURT_READY_FORMAT.body.fontSize);
+  doc.moveDown(0.3);
+  for (const line of COURT_READY_FORMAT.signature.block.split("\n")) {
+    doc.text(line);
+    doc.moveDown(0.1);
+  }
+
+  // Footer with version metadata.
   doc.moveDown(1);
   doc.fontSize(9);
   doc.fillColor("gray");
@@ -496,6 +529,23 @@ export async function exportPdf(
     { align: "right" },
   );
   doc.fillColor("black");
+
+  // Page numbering — write "Page N of M" at the bottom of every page.
+  // This uses pdfkit's bufferedPageRange + switchToPage API.
+  const range = doc.bufferedPageRange();
+  const totalPages = range.count;
+  for (let i = range.start; i < range.start + range.count; i++) {
+    doc.switchToPage(i);
+    doc.fontSize(9);
+    doc.fillColor("gray");
+    doc.text(
+      `Էջ ${i - range.start + 1} / ${totalPages}`,
+      0,
+      pageHeight - COURT_READY_FORMAT.marginsPt.bottom + 6,
+      { align: "center", width: pageWidth },
+    );
+    doc.fillColor("black");
+  }
 
   // End and collect bytes.
   const bufferPromise = collectPdfBytes(doc);

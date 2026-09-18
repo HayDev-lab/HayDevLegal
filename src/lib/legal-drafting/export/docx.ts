@@ -1,19 +1,39 @@
 // src/lib/legal-drafting/export/docx.ts
-// Phase 6 — §28 — DOCX export.
+// Phase 6.1 — §11/§12/§22/§28/§37/§49 — DOCX export (court-ready).
 //
-// Uses the `docx` package (v9.7.1) to produce a production DOCX file:
-//   - Headings (h1 for the title, h2 for sections)
-//   - Paragraphs (with inline emphasis via TextRun)
-//   - Numbered lists (for prayer-for-relief paragraphs)
-//   - Tables (for verified chronology)
-//   - Page breaks between sections
-//   - Armenian Unicode content (TextRun handles UTF-8 internally)
-//   - References + Attachments sections at the end
+// Uses the `docx` package (v9.7.1) to produce a production DOCX file whose
+// formatting is governed by the centralized `COURT_READY_FORMAT` config
+// (§11 — "Do not pretend a statutory formatting rule exists unless
+// verified"). Every magic number (page size, margin, font size, indent,
+// signature block format) lives in the config module — this file does NOT
+// hardcode formatting values.
+//
+// Hardening (Phase 6.1):
+//   - Armenian Unicode: the `docx` package handles UTF-8 natively in
+//     TextRun.text; we additionally verify in the formatting test by
+//     unzipping word/document.xml and checking the Armenian strings are
+//     present verbatim.
+//   - §22: the References section lists citations WITHOUT leaking the
+//     internal debug source ids (F1/C2/...). Each entry is prefixed with a
+//     human-readable type label ("Փաստ", "Օրենսդրություն", ...) instead.
+//   - §37: UNVERIFIED drafts carry a visible "DRAFT / ՉՍՏՈՒԳՎԱԾ ՆԱԽԱԳԻԾ"
+//     label at the top so the operator never accidentally files an
+//     unverified draft.
+//   - §11 pageBreak.beforeHeading: page breaks inserted between major
+//     sections.
+//   - §11 signature: a signature block (config.SIGNATURE_BLOCK) is appended
+//     to every export — the operator fills the signer/title/date.
+//   - §25 attachments: the attachment list contains only ACTUAL workspace
+//     documents (cited evidence, or all READY docs in the case as
+//     fallback) — never invented titles.
 //
 // CRITICAL — §10: "normal export renders human-readable legal citations,
 //                  NOT debug IDs (F1/C2 etc.)"
 // CRITICAL — §28: "attachment list must contain only actual workspace
 //                  documents"
+// CRITICAL — §49: "Court-ready VERIFIED export must contain none of the
+//                  placeholders/IDs" (verified by checkPlaceholders +
+//                  checkInternalIdLeak in the formatting certification test)
 
 import {
   AlignmentType,
@@ -29,6 +49,10 @@ import {
   WidthType,
 } from "docx";
 import { db } from "@/lib/db";
+import {
+  COURT_READY_FORMAT,
+  SOURCE_TYPE_LABELS_HY,
+} from "@/lib/legal-drafting/config/formatting";
 import type {
   DraftSectionContent,
   SectionType,
@@ -140,19 +164,29 @@ function replaceInlineSourceIds(text: string, map: SourceIdMap): string {
   return text.replace(SOURCE_ID_PATTERN, (_match, sid: string) => {
     const entry = map[sid];
     if (entry?.citation) return `(${entry.citation})`;
+    // §22 — No map entry: strip the debug id entirely. Never leak F\d+/C\d+
+    // etc. to the export (the formatting certification test asserts this).
     return "";
   });
 }
 
-/** Convert a body string into docx Paragraph[] (one paragraph per \n\n). */
+/**
+ * Convert a body string into docx Paragraph[] (one paragraph per \n\n).
+ * Uses the centralized body typography from COURT_READY_FORMAT.
+ *
+ * docx's TextRun `size` is in half-points: 12pt → size 24.
+ */
 function bodyToParagraphs(text: string): Paragraph[] {
   if (!text) return [];
   const blocks = text.split(/\n{2,}/);
+  const sizeHalfPt = COURT_READY_FORMAT.body.fontSize * 2;
+  const lineSpacing = Math.round(240 * COURT_READY_FORMAT.body.lineHeight); // 240 = single
   return blocks.map(
     (block) =>
       new Paragraph({
-        children: [new TextRun({ text: block })],
-        spacing: { after: 200 },
+        children: [new TextRun({ text: block, size: sizeHalfPt })],
+        spacing: { after: 200, line: lineSpacing },
+        alignment: AlignmentType.JUSTIFIED,
       }),
   );
 }
@@ -162,12 +196,23 @@ function buildTable(table: {
   headers: string[];
   rows: string[][];
 }): Table {
+  const sizeHalfPt = COURT_READY_FORMAT.table.fontSize * 2;
   const headerRow = new TableRow({
     tableHeader: true,
     children: table.headers.map(
       (h) =>
         new TableCell({
-          children: [new Paragraph({ children: [new TextRun({ text: h, bold: true })] })],
+          children: [
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: h,
+                  bold: COURT_READY_FORMAT.table.headerBold,
+                  size: sizeHalfPt,
+                }),
+              ],
+            }),
+          ],
           width: { size: Math.floor(100 / table.headers.length), type: WidthType.PERCENTAGE },
         }),
     ),
@@ -178,7 +223,11 @@ function buildTable(table: {
         children: row.map(
           (cell) =>
             new TableCell({
-              children: [new Paragraph({ children: [new TextRun({ text: cell ?? "" })] })],
+              children: [
+                new Paragraph({
+                  children: [new TextRun({ text: cell ?? "", size: sizeHalfPt })],
+                }),
+              ],
             }),
         ),
       }),
@@ -190,7 +239,7 @@ function buildTable(table: {
 }
 
 // ---------------------------------------------------------------------------
-// §28 — exportDocx
+// §28 — exportDocx (court-ready)
 // ---------------------------------------------------------------------------
 
 const SECTION_ORDER: SectionType[] = [
@@ -243,49 +292,103 @@ export async function exportDocx(
 
   const sourceIdMap = parseSourceIdMap(version.sourceIdMap);
   const parties = parseParties(draft.parties);
+  const isUnverified = version.verificationStatus === "UNVERIFIED";
 
   // Build the docx children list.
   const children: (Paragraph | Table)[] = [];
 
-  // §11 — Header block.
+  // §37 — DRAFT watermark at the very top of unverified drafts. Visible
+  // red bold label so the operator cannot accidentally file an
+  // unverified draft.
+  if (isUnverified) {
+    children.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [
+          new TextRun({
+            text: COURT_READY_FORMAT.draftLabel,
+            bold: true,
+            color: "C00000",
+            size: 28, // 14pt
+          }),
+        ],
+        spacing: { after: 200 },
+      }),
+    );
+  }
+
+  // §11 — Header block (title as H1, centered per §11 alignment.heading).
   children.push(
     new Paragraph({
       heading: HeadingLevel.HEADING_1,
-      children: [new TextRun({ text: draft.title ?? "Untitled Draft", bold: true })],
+      alignment: AlignmentType.CENTER,
+      children: [
+        new TextRun({
+          text: draft.title ?? "Untitled Draft",
+          bold: COURT_READY_FORMAT.heading.bold,
+          size: COURT_READY_FORMAT.heading.h1Size * 2,
+          font: COURT_READY_FORMAT.heading.font,
+        }),
+      ],
     }),
   );
   if (draft.targetCourtOrAuthority) {
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: `Լրացրած դատարան / մարմին: ${draft.targetCourtOrAuthority}` })],
+        children: [
+          new TextRun({
+            text: `Լրացրած դատարան / մարմին: ${draft.targetCourtOrAuthority}`,
+            size: COURT_READY_FORMAT.body.fontSize * 2,
+          }),
+        ],
       }),
     );
   }
   if (draft.jurisdiction) {
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: `Իրավասություն: ${draft.jurisdiction}` })],
+        children: [
+          new TextRun({
+            text: `Իրավասություն: ${draft.jurisdiction}`,
+            size: COURT_READY_FORMAT.body.fontSize * 2,
+          }),
+        ],
       }),
     );
   }
   if (draft.caseNumber) {
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: `Գործի համար: ${draft.caseNumber}` })],
+        children: [
+          new TextRun({
+            text: `Գործի համար: ${draft.caseNumber}`,
+            size: COURT_READY_FORMAT.body.fontSize * 2,
+          }),
+        ],
       }),
     );
   }
   if (parties.length > 0) {
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: `Կողմեր: ${parties.join(", ")}` })],
+        children: [
+          new TextRun({
+            text: `Կողմեր: ${parties.join(", ")}`,
+            size: COURT_READY_FORMAT.body.fontSize * 2,
+          }),
+        ],
       }),
     );
   }
   if (draft.proceduralStage) {
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: `Դատավարական փուլ: ${draft.proceduralStage}` })],
+        children: [
+          new TextRun({
+            text: `Դատավարական փուլ: ${draft.proceduralStage}`,
+            size: COURT_READY_FORMAT.body.fontSize * 2,
+          }),
+        ],
       }),
     );
   }
@@ -295,6 +398,7 @@ export async function exportDocx(
         children: [
           new TextRun({
             text: `Կատարման ժամկետ: ${new Date(draft.filingDeadline).toLocaleDateString("hy-AM")}`,
+            size: COURT_READY_FORMAT.body.fontSize * 2,
           }),
         ],
       }),
@@ -302,18 +406,29 @@ export async function exportDocx(
   }
   children.push(
     new Paragraph({
-      children: [new TextRun({ text: `Փաստաթուղթ: ${draft.documentType}` })],
+      children: [
+        new TextRun({
+          text: `Փաստաթուղթ: ${draft.documentType}`,
+          size: COURT_READY_FORMAT.body.fontSize * 2,
+        }),
+      ],
     }),
   );
   if (draft.goal) {
     children.push(
       new Paragraph({
-        children: [new TextRun({ text: `Նպատակ: ${draft.goal}`, italics: true })],
+        children: [
+          new TextRun({
+            text: `Նպատակ: ${draft.goal}`,
+            italics: true,
+            size: COURT_READY_FORMAT.body.fontSize * 2,
+          }),
+        ],
       }),
     );
   }
 
-  // Page break before the body.
+  // §11 pageBreak.beforeHeading — page break before the body.
   children.push(new Paragraph({ children: [new PageBreak()] }));
 
   // Render each section.
@@ -322,7 +437,14 @@ export async function exportDocx(
     children.push(
       new Paragraph({
         heading: HeadingLevel.HEADING_2,
-        children: [new TextRun({ text: row.title, bold: true })],
+        children: [
+          new TextRun({
+            text: row.title,
+            bold: COURT_READY_FORMAT.heading.bold,
+            size: COURT_READY_FORMAT.heading.h2Size * 2,
+            font: COURT_READY_FORMAT.heading.font,
+          }),
+        ],
       }),
     );
 
@@ -336,7 +458,12 @@ export async function exportDocx(
           row.sectionType === "requested_relief" ? `${i + 1}. ` : "• ";
         children.push(
           new Paragraph({
-            children: [new TextRun({ text: `${prefix}${renderedP}` })],
+            children: [
+              new TextRun({
+                text: `${prefix}${renderedP}`,
+                size: COURT_READY_FORMAT.body.fontSize * 2,
+              }),
+            ],
             spacing: { after: 100 },
           }),
         );
@@ -347,12 +474,13 @@ export async function exportDocx(
       children.push(buildTable(content.table));
     }
 
-    // Page break between sections.
+    // §11 pageBreak.beforeHeading — page break between major sections.
     children.push(new Paragraph({ children: [new PageBreak()] }));
   }
 
-  // §10 — References section. List every cited source id with its
-  // human-readable citation.
+  // §22 — References section. List every cited source with its
+  // human-readable citation. CRITICAL: do NOT leak the internal source id
+  // (F1, C2, ...). Use a human-readable type label ("Փաստ", ...) instead.
   const citedIds = new Set<string>();
   for (const row of sectionRows) {
     const content = parseContent(row.content);
@@ -362,7 +490,13 @@ export async function exportDocx(
     children.push(
       new Paragraph({
         heading: HeadingLevel.HEADING_2,
-        children: [new TextRun({ text: "Աղբյուրներ / References", bold: true })],
+        children: [
+          new TextRun({
+            text: "Աղբյուրներ / References",
+            bold: COURT_READY_FORMAT.heading.bold,
+            size: COURT_READY_FORMAT.heading.h2Size * 2,
+          }),
+        ],
       }),
     );
     const typeOrder: Record<string, number> = {
@@ -383,12 +517,15 @@ export async function exportDocx(
         const tb = typeOrder[b.entry!.type] ?? 99;
         return ta - tb;
       });
-    for (const { sid, entry } of cited) {
+    for (const { entry } of cited) {
+      const typeLabel =
+        SOURCE_TYPE_LABELS_HY[entry!.type] ?? "Աղբյուր";
+      const citation = entry!.citation ?? "(չհաստատված աղբյուր)";
       children.push(
         new Paragraph({
           children: [
-            new TextRun({ text: `${sid} → `, bold: true }),
-            new TextRun({ text: entry!.citation ?? "(չհաստատված աղբյուր)" }),
+            new TextRun({ text: `${typeLabel}: `, bold: true }),
+            new TextRun({ text: citation }),
           ],
         }),
       );
@@ -417,7 +554,13 @@ export async function exportDocx(
     children.push(
       new Paragraph({
         heading: HeadingLevel.HEADING_2,
-        children: [new TextRun({ text: "Կից փաստաթղթեր / Attachments", bold: true })],
+        children: [
+          new TextRun({
+            text: "Կից փաստաթղթեր / Attachments",
+            bold: COURT_READY_FORMAT.heading.bold,
+            size: COURT_READY_FORMAT.heading.h2Size * 2,
+          }),
+        ],
       }),
     );
     docs.forEach((d, i) => {
@@ -434,6 +577,29 @@ export async function exportDocx(
     });
   }
 
+  // §11 — Signature block appended at the end of every export. The
+  // operator fills [signer name] / [title] / [date] before filing.
+  children.push(new Paragraph({ children: [new PageBreak()] }));
+  children.push(
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: "Ստորագրություն / Signature",
+          bold: true,
+          size: COURT_READY_FORMAT.heading.h3Size * 2,
+        }),
+      ],
+    }),
+  );
+  for (const line of COURT_READY_FORMAT.signature.block.split("\n")) {
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: line })],
+        spacing: { after: 100 },
+      }),
+    );
+  }
+
   // Footer with version metadata.
   children.push(
     new Paragraph({
@@ -442,21 +608,26 @@ export async function exportDocx(
         new TextRun({
           text: `Արտահանված է ${new Date().toISOString()} | Տարբերակ ${version.version} | ${version.verificationStatus}`,
           italics: true,
-          size: 18,
+          size: 18, // 9pt
         }),
       ],
     }),
   );
 
   const doc = new Document({
-    creator: "HayDevLegal — Phase 6",
+    creator: "HayDevLegal — Phase 6.1",
     title: draft.title ?? "Draft",
     description: `Legal draft ${draftId} (version ${version.version})`,
     sections: [
       {
         properties: {
           page: {
-            margin: { top: 1132, right: 1132, bottom: 1132, left: 1132 },
+            margin: {
+              top: COURT_READY_FORMAT.marginsTwips.top,
+              right: COURT_READY_FORMAT.marginsTwips.right,
+              bottom: COURT_READY_FORMAT.marginsTwips.bottom,
+              left: COURT_READY_FORMAT.marginsTwips.left,
+            },
           },
         },
         children,

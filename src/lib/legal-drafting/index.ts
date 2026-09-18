@@ -145,3 +145,38 @@ export {
   AiDraftSectionSchema as AiDraftSectionSchemaFallback,
   type AiDraftSection as AiDraftSectionFallback,
 } from "./generation/fallback-drafter";
+
+// ---------------------------------------------------------------------------
+// Phase 6.1 — Court-ready formatting (§11) + export (§28)
+// ---------------------------------------------------------------------------
+
+export {
+  COURT_READY_FORMAT,
+  DRAFT_LABEL,
+  FONT_BOLD_CANDIDATES,
+  FONT_CANDIDATES,
+  MARGINS_MM,
+  MARGINS_PT,
+  MARGINS_TWIPS,
+  PAGE_HEIGHT_MM,
+  PAGE_SIZE,
+  PAGE_WIDTH_MM,
+  PDF_FONT,
+  SIGNATURE_BLOCK,
+  SOURCE_TYPE_LABELS_EN,
+  SOURCE_TYPE_LABELS_HY,
+  findUnicodeFont,
+} from "./config/formatting";
+
+export {
+  checkCourtReady,
+  checkInternalIdLeak,
+  checkPlaceholders,
+  type CourtReadyCheckResult,
+  type InternalIdLeakResult,
+  type PlaceholderCheckResult,
+} from "./export/placeholder-check";
+export { exportDocx } from "./export/docx";
+export { exportPdf } from "./export/pdf";
+export { exportTxt } from "./export/txt";
+export { exportDraft, type ExportFormat } from "./export";
