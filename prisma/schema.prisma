@@ -79,6 +79,7 @@ model CaseWorkspace {
   contradictions CaseContradiction[]
   issueLinks    LegalIssueLink[]
   analysisResults CaseAnalysisResult[]
+  drafts        LegalDraft[]
 
   @@index([status])
   @@index([caseType])
@@ -423,4 +424,101 @@ model CaseAnalysisResult {
 
   @@index([caseId, status])
   @@index([caseId, requestId])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 6 — Legal Document Drafting Engine
+// §7 — LegalDraft: a legal document being drafted from verified case material.
+// ---------------------------------------------------------------------------
+
+model LegalDraft {
+  id                    String   @id @default(cuid())
+  caseId                String
+  // MOTION | OBJECTION | CLAIM | RESPONSE | APPEAL | CASSATION_APPEAL |
+  // CONSTITUTIONAL_COMPLAINT | ECHR_APPLICATION_SUPPORT | LEGAL_MEMORANDUM |
+  // FACTUAL_STATEMENT | REQUEST_TO_AUTHORITY | OTHER
+  documentType          String
+  title                 String
+  // PLANNING | DRAFTING | VERIFYING | NEEDS_REVIEW | VERIFIED | EXPORT_READY | ARCHIVED
+  status                String   @default("PLANNING")
+  // hy | ru | en
+  language              String   @default("hy")
+  targetCourtOrAuthority String?
+  proceduralStage       String?
+  // §7 — "Never infer deadlines without support." Only set when explicitly provided.
+  filingDeadline        DateTime?
+  // §11 — Document goal (release, exclude evidence, restore deadline, etc.)
+  goal                  String?
+  // §11 — Requested relief (from goal + document type + verified context)
+  requestedRelief       String?
+  // JSON-serialized DraftingContext summary (bounded — never whole case)
+  contextSummary        String   @default("{}")
+  // JSON-serialized DocumentPlan (structured plan before prose)
+  plan                  String   @default("{}")
+  // §11 — Parties, jurisdiction, authority, case number (captured, never invented)
+  parties               String   @default("[]")
+  jurisdiction          String?
+  caseNumber             String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  case     CaseWorkspace   @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  versions DraftVersion[]
+  sections DraftSection[]
+
+  @@index([caseId, status])
+  @@index([caseId, documentType])
+}
+
+// §7 — DraftVersion: versioned content. Never overwrite the only prior version.
+model DraftVersion {
+  id              String   @id @default(cuid())
+  draftId         String
+  version         Int      @default(1)
+  // JSON-serialized structured sections (DraftSection[])
+  content         String   @default("[]")
+  // SYSTEM | USER | AI
+  createdBy       String   @default("SYSTEM")
+  // UNVERIFIED | PARTIAL | VERIFIED | NEEDS_REVIEW
+  verificationStatus String @default("UNVERIFIED")
+  // §10 — Internal source IDs (F1, CE4, L2, C3, CC1, E5, A2) used by AI;
+  // normal export renders human-readable citations.
+  sourceIdMap     String   @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  draft LegalDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  sections DraftSection[]
+
+  @@index([draftId, version])
+}
+
+// §23 — Section/paragraph review states. Each section has independent status.
+model DraftSection {
+  id              String   @id @default(cuid())
+  draftId         String
+  versionId       String
+  // header | introduction | procedural_history | facts | legal_issues |
+  // applicable_law | precedents | arguments | counterarguments |
+  // requested_relief | attachments | missing_information
+  sectionType     String
+  title           String
+  // JSON-serialized content (text + internal source IDs)
+  content         String   @default("{}")
+  // UNREVIEWED | AI_DRAFTED | VERIFIED | NEEDS_SUPPORT | USER_EDITED | REJECTED
+  reviewStatus    String   @default("UNREVIEWED")
+  // §25 — STALE/NEEDS_REVERIFY when relied fact/evidence/authority changes
+  stale           Boolean  @default(false)
+  // JSON-serialized warnings: [{ type, detail, sourceId? }]
+  warnings        String   @default("[]")
+  // §25 — Previous content (for accept/reject regeneration)
+  previousContent String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  draft   LegalDraft   @relation(fields: [draftId], references: [id], onDelete: Cascade)
+  version DraftVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@index([draftId, sectionType])
+  @@index([versionId])
 }

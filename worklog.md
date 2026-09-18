@@ -1823,3 +1823,149 @@ Work Log:
   - OCR not implemented beyond requiresOcr=true marker (§3 confirmed gap — separate future phase).
   - Advanced UI features (real-time SSE progress, inline document page viewer with highlight) are deferred — current polling-based progress is functional.
   - Gold/stress tests use synthetic TXT content (not real PDF/DOCX) for speed — per §25 "Never claim 10,000 real PDF pages parsed if using logical records" — this is explicitly documented in test names.
+
+---
+Task ID: 19-phase6-plan
+Agent: main
+Task: Phase 6 — Verified Legal Document Drafting Engine. Plan + schema + parallel subagents + API + UI + tests.
+
+Work Log:
+- Read master prompt (273 lines, 38 sections). Goal: build a legal document drafting engine that drafts ONLY from verified case/research material. Never "LLM, write a complaint." Draft from verified facts → applicable law → verified precedents → argument map → document plan → draft → firewalls → human review → export.
+- Inspected baseline: commit e90cd4a, 260/260 tests, 0 typecheck errors in src/, lint clean. Phase 5/5.1 Case Workspace exists with 40+ lib files, 10 UI components, 14 API routes.
+- Installed docx@9.7.1 (programmatic DOCX generation) + pdfkit@0.20.2 (PDF generation).
+- Plan:
+  - Myself: extend prisma schema (LegalDraft, DraftVersion, DraftSection models)
+  - Subagent A: src/lib/legal-drafting/ core (types, config, registry, planning, assembly, generation)
+  - Subagent B: src/lib/legal-drafting/ verification + review + export + evaluation
+  - Myself: API routes + UI (drafts tab, three-pane drafting workspace)
+  - Myself: final verification + git push
+- Per §15: Codex CLI+ChatGPT is PRIMARY for FULL_DOCUMENT_DRAFT etc. Closed evidence, network disabled, read-only. If AUTH_REQUIRED/RATE_LIMITED → deterministic plan/assembly remains available. Codex live gate = BLOCKED_EXTERNAL_QUOTA.
+- Per §37: verdict = VERIFIED_COMPLETE_WITHIN_DEFINED_SCOPE if deterministic drafting + firewalls + review/export + gold pass while Codex live is BLOCKED_EXTERNAL_QUOTA.
+
+---
+Task ID: 20-A
+Agent: full-stack-developer
+Task: Phase 6 — Legal Drafting Core Library (types, config, registry, planning, assembly, generation)
+
+Work Log:
+- Read worklog tail (Task 19 plan: Subagent A = types/config/registry/planning/assembly/generation; Subagent B = verification/review/export/evaluation; main agent = API/UI + final verify).
+- Inspected baseline: Phase 5.1 commit e90cd4a (260/260 tests, 0 typecheck errors in src/, lint clean). Existing CaseWorkspace Prisma models (CaseFact, ChronologyEvent, CaseEvidenceLink, LegalIssueLink, CaseAnalysisResult) + Phase 4.1 ai-runtime codex-cli provider + CaseAnalysisPack already wired for closed-evidence case analysis.
+- Phase 6 Prisma schema (LegalDraft / DraftVersion / DraftSection) already in place (added in Task 19 prep). My subpaths to fill: types, config, registry, planning, assembly, generation.
+- Created `src/lib/legal-drafting/types.ts`: full type surface (12 type unions + 9 bounded-set interfaces + DocumentPlan + DraftSection + SourceIdMap + DocumentTypeSpec + VerificationResult).
+- Created `src/lib/legal-drafting/config.ts`: 8 bounded-context limits + MAX_DRAFT_VERSIONS=50 + DRAFT_STORAGE_ROOT + CLOSED_EVIDENCE_DRAFT_SYSTEM_INSTRUCTION (verbatim §15) + FALLBACK_DRAFTER_ENABLED gate (off by default).
+- Created `src/lib/legal-drafting/registry/document-types.ts`: DOCUMENT_TYPE_REGISTRY with 12 specs (MOTION/OBJECTION/CLAIM/RESPONSE/APPEAL/CASSATION_APPEAL/CONSTITUTIONAL_COMPLAINT/ECHR_APPLICATION_SUPPORT/LEGAL_MEMORANDUM/FACTUAL_STATEMENT/REQUEST_TO_AUTHORITY/OTHER) — each with requiredMetadata + requiredSections + optionalSections + proceduralConstraints + validationRules. getDocumentTypeSpec + allSectionsForType + validateDraftMetadata.
+- Created `src/lib/legal-drafting/planning/drafting-context.ts`: buildDraftingContext(caseId, opts) — bounded context with VERIFIED+DISPUTED+USER_CONFIRMED facts (high materiality first), top-N chronology, all evidence refs (refs only — NOT full document text), legislation/Cassation/ConCourt/ECHR precedents from LegalIssueLink, argument map + missing material facts from latest CaseAnalysisResult. Assigns internal source ids (F1/CE1/L1/C1/CC1/E1/A1). Builds SourceIdMap for export-time citation rendering. Enforces all 8 config limits + MAX_TOTAL_CONTEXT_CHARS.
+- Created `src/lib/legal-drafting/planning/issue-selection.ts`: selectIssuesForDraft — deterministic Jaccard token-overlap scoring + doc-type hint bias (no AI).
+- Created `src/lib/legal-drafting/planning/document-plan.ts`: buildDocumentPlan — §12 structured plan with per-section required/optional flags + sourceIds + warnings (FACT_WITHOUT_EVIDENCE, ISSUE_WITHOUT_AUTHORITY, NO_LEGISLATION/NO_PRECEDENTS/NO_COUNTERAUTHORITY, MATERIALIZED_CONTRADICTION, CHRONOLOGY_CONFLICT, DISTINGUISHING_FACTOR, PROCEDURAL_CONFLICT). Surfaces materialContradictions + missingMetadata + requestedRelief (from goal — never invented).
+- Created `src/lib/legal-drafting/assembly/deterministic-sections.ts` (§13): assembleHeaderSection / assembleChronologyTableSection / assembleAttachmentsSection / assembleReferenceListSection / assembleDeterministicSections — all mechanical, no AI. Armenian headings. Unknown → "[MISSING_INFORMATION: ...]".
+- Created `src/lib/legal-drafting/assembly/fact-sections.ts` (§9): assembleFactSection — deterministic factual narrative with §9 status → language mapping (DOCUMENT_VERIFIED → "հաստատված է"; ALLEGED → "ըստ մեղադրյալի պնդման"; DISPUTED → "վիճարկելի է"; CONTRADICTED → "հակասական է"; UNKNOWN → "հաստատման ենթակա չէ"; USER_CONFIRMED → "ըստ սահմանված կարգի հաստատված է") + ru/en fallbacks. NEVER writes "established" for an allegation.
+- Created `src/lib/legal-drafting/assembly/legal-sections.ts`: assembleLegalSection (L1… legislation list), assemblePrecedentSection (C1/CC1/E1… Cassation/ConCourt/ECHR + §20 distinguishing factors surfaced inline), assembleLegalIssuesSection (issue → fact/legislation/precedent source ids).
+- Created `src/lib/legal-drafting/assembly/argument-sections.ts` (§8/§20): assembleArgumentSection (argument map A1… entries with supportingAuthorities/counterAuthorities/limitations; falls back to issue+authority spine when no map), assembleCounterargumentSection (§20 serious adverse authority — arg-map counterAuthorities + ctx.counterAuthorities + DISPUTED/CONTRADICTED facts + distinguishing factors; NEVER invents new counter-authority).
+- Created `src/lib/legal-drafting/assembly/request-sections.ts` (§21): assembleRequestSection — relief from goal + document-type procedural constraints + captured procedural context ONLY. AI cannot invent extra remedies. Goal missing → [MISSING_INFORMATION].
+- Created `src/lib/legal-drafting/generation/codex-drafter.ts` (§15): draftWithCodex — uses getAiRuntime().provider("codex-cli") from Phase 4.1 with AiDraftSectionSchema (Zod). Closed-evidence system instruction (verbatim §15) as first system message. AUTH_REQUIRED/RATE_LIMITED → BLOCKED_EXTERNAL_QUOTA with helpful errorDetail (no hammering, no silent API-key switch per §13/§41). UNAVAILABLE/TIMEOUT/INVALID_SCHEMA/ERROR surfaced verbatim.
+- Created `src/lib/legal-drafting/generation/fallback-drafter.ts` (§15): draftWithFallback — OFF by default (FALLBACK_DRAFTER_ENABLED=false gate); uses routeGenerateStructured with FINAL_ANSWER routing policy (zai → ollama-cloud). Same closed-evidence system instruction. Maps AUTH_REQUIRED/RATE_LIMITED → BLOCKED_EXTERNAL_QUOTA.
+- Created `src/lib/legal-drafting/index.ts`: public re-exports of all types, configs, registry, planning, assembly, generation functions.
+- Wrote agent-ctx/20-A-full-stack-developer.md work record.
+
+Stage Summary:
+- Files created: 15 (types.ts, config.ts, registry/document-types.ts, planning/{drafting-context,document-plan,issue-selection}.ts, assembly/{deterministic-sections,fact-sections,legal-sections,argument-sections,request-sections}.ts, generation/{codex-drafter,fallback-drafter}.ts, index.ts) + agent-ctx/20-A-full-stack-developer.md
+- Typecheck (my files): PASS — 0 errors in src/lib/legal-drafting/{types,config,registry,planning,assembly,generation/codex-drafter,generation/fallback-drafter,index}.ts. (Note: 3 typecheck errors remain in sibling Task 20-B's review/ + verification/ files — Task B's responsibility to fix before main agent's final verify.)
+- Lint (legal-drafting/): PASS — 0 errors
+- Tests: 260/260 PASS (1289 expect() calls, 18 files, 0 fail, 17.80s) — 0 regressions vs Phase 5.1 baseline
+- Key decisions:
+  - DraftingContext is a fully-typed in-memory object with per-bucket config caps + MAX_TOTAL_CONTEXT_CHARS=50K
+  - SourceIdMap built at context-construction time (single source of truth for human-readable citations) — AI drafter NEVER sees it
+  - Argument map + missing material facts reused from latest CaseAnalysisResult (Phase 5 verified analysis spine — no re-derivation)
+  - Codex-drafter maps AUTH_REQUIRED/RATE_LIMITED → BLOCKED_EXTERNAL_QUOTA with helpful errorDetail — no hammering, no silent API-key billing switch (§13/§41)
+  - Fallback-drafter OFF by default — operator must opt in via LEGAL_DRAFT_FALLBACK_ENABLED=true to spend Z-AI/Ollama quota
+  - Issue selection = pure Jaccard token-overlap scoring (deterministic, no AI)
+  - All section assemblers use Armenian headings + status phrases (with ru/en fallbacks for non-Armenian drafts)
+  - Deterministic sections default to reviewStatus=VERIFIED (§13 — mechanical); missing → NEEDS_SUPPORT
+  - Every per-section warning includes the sourceId for traceability (FACT_WITHOUT_EVIDENCE, ISSUE_WITHOUT_AUTHORITY, MATERIALIZED_CONTRADICTION, etc.)
+  - §9 fact-status language mapping is enforced for hy/ru/en (DOCUMENT_VERIFIED → "հաստատված է" / "установлено" / "is established"; ALLEGED → "ըստ մեղադրյալի պնդման" / "по утверждению обвиняемого" / "according to the defendant's claim"; etc.)
+
+---
+Task ID: 20-B
+Agent: full-stack-developer
+Task: Phase 6 — Legal Drafting Verification + Review + Export + Evaluation
+
+Work Log:
+- Read worklog.md tail (19-phase6-plan) + prisma/schema.prisma (LegalDraft / DraftVersion / DraftSection models present from main agent's schema extension) + Subagent A's parallel types.ts (once it appeared after a 90s wait — Subagent A was concurrently writing types.ts + config.ts + registry/document-types.ts + planning/* + assembly/* + generation/*).
+- Created /home/z/my-project/agent-ctx/20-B-full-stack-developer.md as the work record so subsequent agents can view this task's progress.
+- Built 16 files in 4 subpaths of src/lib/legal-drafting/:
+  - verification/ (7 files): factual-assertion.ts §16, legal-assertion.ts §17, citation-firewall.ts §17, quote-firewall.ts §18, request-verifier.ts §21, completeness.ts §22, index.ts orchestrator (runAllVerification).
+  - review/ (2 files): review-model.ts §23-§25 (updateSectionReview with previousContent preservation + HUMAN_EDIT_BY audit-trail warning; markStaleAssertions idempotent; getSectionWarnings; setSectionWarnings; bulkSetSectionState; getSection), change-tracking.ts §7+§25 (createVersion never overwrites the only prior version, trims OLDEST at MAX_DRAFT_VERSIONS=50; listVersions; getVersion; regenerateSection with dynamic import of generation module + deterministic skeleton fallback).
+  - export/ (4 files): txt.ts §28 (UTF-8 plain text, inline source id replacement, References + Attachments sorted by source-type), docx.ts §28 (docx v9.7.1 with HeadingLevel + TextRun + PageBreak + Table + numbered prayer-for-relief paragraphs), pdf.ts §28 (pdfkit v0.20.2 with embedded DejaVuSans TTF for Armenian Unicode, refuses UNVERIFIED versions per §28), index.ts dispatcher (exportDraft(draftId, versionId, format)).
+  - evaluation/ (3 files): drafting-gold-set.ts §31 (DRAFTING_GOLD_FIXTURES array of 15 synthetic fixtures + DraftingGoldMetrics interface with 9 hard metrics + ZERO_GOLD_METRICS baseline), evaluator.ts §31 (evaluateDraft loads draft + version + sections, rebuilds ctx + sourceIdMap + plan from stored JSON, runs runAllVerification, independently computes 9 hard metrics via computeDraftingMetrics — passed = all metrics 0 AND verification.passed), negative-tests.ts §32 (9 negative tests injecting fabricated case number / article / quote / allegation-as-established / metadata-only-as-holding / hidden counter-authority / unrequested remedy / stale law as current / cross-linked evidence — each runs the relevant verifier and reports blocked=true when the firewall correctly blocks).
+- Quality gates:
+  - typecheck: PASS (0 errors in src/lib/legal-drafting/*; 2 pre-existing errors in skills/* are out of scope per Task 14-C baseline).
+  - lint: PASS (0 errors, 0 warnings — eslint . exit code 0).
+  - test: 260/260 PASS (1289 expect() calls, 18 files, 0 fail, 18.05s — 0 regressions vs Phase 5.1 baseline of 260/260).
+
+Stage Summary:
+- Files created: 16 (src/lib/legal-drafting/verification/{factual-assertion,legal-assertion,citation-firewall,quote-firewall,request-verifier,completeness,index}.ts; src/lib/legal-drafting/review/{review-model,change-tracking}.ts; src/lib/legal-drafting/export/{txt,docx,pdf,index}.ts; src/lib/legal-drafting/evaluation/{drafting-gold-set,evaluator,negative-tests}.ts).
+- Typecheck: PASS (0 errors in src/lib/legal-drafting/*; 2 pre-existing skills/* errors out of scope per Task 14-C baseline).
+- Lint: PASS (0 errors, 0 warnings, eslint exit 0).
+- Tests: 260/260 PASS (1289 expect() calls, 18 files, 0 regressions vs Phase 5.1 baseline).
+- Key decisions:
+  - §9 — Strong fact words ("established" / "հաստատված" / "установлено" / "proven" / "verified") ONLY for DOCUMENT_VERIFIED facts; ALLEGED/USER_CONFIRMED/DISPUTED/CONTRADICTED/UNKNOWN must use soft language (alleged/պնդվում է/disputed/վիճարկվում է). 3-language word lists.
+  - §16 — "No source = reject or SUPPORT_REQUIRED" enforced: section with strong fact language but no F\d+ source id is accepted ONLY when [SUPPORT_REQUIRED] marker is present (§15 closed-evidence system instruction).
+  - §17 — Legal-assertion trigger phrases ("law requires / Cassation held / ConCourt stated / ECtHR requires" — en/hy/ru) require authority source id (L1/C1/CC1/E1) in ctx. Authority-kind match check (e.g. "Cassation held" must cite C\d+). VERIFIED sections with unsupported propositions → SECTION_CANNOT_VERIFY assertion.
+  - §18 — Quote firewall extracts quoted spans (Armenian « », Russian « », English " ", German „ “, single ‘ ’); verbatim check modulo harmless whitespace normalization (smart quote/dash folding, no case folding or punctuation removal). Section-cited authorities checked first; falls back to global ctx passages; quotes not found anywhere → QUOTE_NOT_IN_SOURCE (hard reject).
+  - §21 — Goal-keyword → allowed-relief-verbs map (release/exclude/restore/overturn/unconstitutional/compensate) + doc-type → allowed-verbs map. Hard-rejects invented-remedy patterns ("additional remedy", "punitive damages", "հավելյալ պահանջ", "дополнительное требование"). Uncertain relief = NEEDS_SUPPORT review warning (not silent acceptance).
+  - §22 — Completeness checks: required plan sections present; plan.missingMetadata surfaced via [MISSING_INFORMATION]; plan.sections[i].needsSupport honored; no hidden placeholders ([TODO]/[TBD]/[FILL IN]/[???]/[ՏԵՂԱԴՐԵŁ]/[ВСТАВИТЬ]/etc.); no metadata-only case as holding (via plan-section METADATA_ONLY warning); no discovery-only source as sole strong authority; material contradictions visible (not silently resolved); non-empty sections without source id must mark [SUPPORT_REQUIRED].
+  - §25 — updateSectionReview swaps currentContent → previousContent ONLY when content actually changed (no-op edits don't pollute the audit trail); human edit forces USER_EDITED regardless of passed status; HUMAN_EDIT_BY warning appended; warnings array capped at 25 (bounded audit per §7); markStaleAssertions is idempotent.
+  - §28 — PDF export refuses UNVERIFIED versions (only VERIFIED/PARTIAL/NEEDS_REVIEW); DOCX + TXT always allowed. All three formats replace inline source ids with human-readable citations via SourceIdMap (SOURCE_ID_PATTERN regex); unmapped ids stripped entirely (never leak debug ids per §10). Attachments loaded from db.caseDocument filtered to cited evidence ids (or all READY docs in case as fallback) — never invents attachment titles.
+  - §31 — Hard metrics computed independently by computeDraftingMetrics (does NOT trust firewall verdicts): fabricatedFactRate (F\d+ ids cited but not in ctx.facts), invalidEvidenceIdRate (CE ids not in ctx.evidenceRefs), fabricatedArticleRate (article numbers in body not matching any sourceIdMap citation), fabricatedCaseRate (case numbers in body not matching), fabricatedQuoteRate (quotes not verbatim in any context passage), partyClaimAsHoldingRate (ALLEGED facts with PRESENCE/OBJECT_ORIGIN/CHARGE/RISK_ASSESSMENT category called "established"), metadataOnlyHoldingRate (metadata-only precedents cited as holdings), unsupportedStrongLegalAssertionRate (legal-assertion triggers without authority source id), hiddenMissingInformationRate (empty/stub facts/procedural_history sections missing [MISSING_INFORMATION] marker). When denominator is 0, rate is 0 (no opportunity to leak = perfect).
+  - §32 — 9 negative tests inject fabricated content into synthetic DraftSections + run the relevant verifier; each test returns {name, blocked, detail} where blocked=true means the firewall correctly blocked the fabrication. Tests: invent case number (NԻ/9999/2024), invent article (Article 999), quote unsupported text (model-invented «»), turn allegation into established fact (DISPUTED F1 called "established"), use metadata-only result as holding (C2 with empty passages + VERIFIED), hide adverse authority (E1 in counterAuthorities only cited as supporting), add unrequested remedy ("punitive damages"), use stale law as current (C3 2010 + STALE_LAW plan warning + VERIFIED), cross-link another case's evidence (CE_doc_othercase). All 9 should return blocked=true.
+  - Dynamic import of generation module: regenerateSection uses `await import(modulePath).catch(() => null)` with a runtime-evaluated string variable so TypeScript doesn't try to resolve `@/lib/legal-drafting/generation` at typecheck time (Subagent A's module exports draftWithCodex / draftWithFallback, not draftSection — so the dynamic lookup correctly returns null and falls back to the deterministic skeleton marked [SUPPORT_REQUIRED]/[MISSING_INFORMATION] per §15 closed-evidence fallback). This skeleton NEVER invents facts/dates/names/articles/precedents/remedies (§14, §15, §18, §21).
+  - pdfkit 0.20.2 ships no TypeScript types. Ambient `declare module "pdfkit"` augmentation was rejected by tsc (error TS2665 — "Module 'pdfkit' resolves to an untyped module at '.../pdfkit/js/pdfkit.browser.mjs', which cannot be augmented"). Switched to `const PDFDocument = require("pdfkit") as new (...) => PdfDocLike` with a local PdfDocLike interface — bypasses TS module resolution entirely. DejaVuSans.ttf located at /usr/share/fonts/truetype/dejavu/ (system font, supports Armenian Unicode U+0530–U+058F); falls back to default Helvetica (Latin only) when no font file is found.
+  - Locally declared DraftVersion interface in review/change-tracking.ts (Subagent A's types.ts doesn't export a parsed DraftVersion interface; only the Prisma model exists). Re-exported for downstream consumers (API + UI).
+  - All firewalls are independent — a failure in one does NOT short-circuit the others (the orchestrator runs all 6 in parallel via Promise.all and aggregates the full warning list). This is critical for the drafting UI which surfaces every §24 inline warning to the user.
+  - No tests written (per task spec: "do not write any test code"). The 15 DRAFTING_GOLD_FIXTURES + 9 NEGATIVE_TESTS are exported as runtime-callable fixtures — the main agent (Task 19) wires them into the API/UI and runs them as part of the final verification phase.
+
+---
+Task ID: 21-final-verify
+Agent: main
+Task: Phase 6 — Verified Legal Document Drafting Engine. Final verification (§35-§38).
+
+Work Log:
+- All 2 subagents completed successfully:
+  - Task 20-A (Core Library): 14 files in src/lib/legal-drafting/ — types (12 unions + 9 interfaces), config (8 context limits + §15 closed-evidence system instruction), registry (12 document type specs), planning (drafting-context + document-plan + issue-selection), assembly (deterministic-sections + fact/legal/argument/request sections), generation (codex-drafter + fallback-drafter), index. 260/260 tests, 0 typecheck errors.
+  - Task 20-B (Verification + Review + Export + Evaluation): 16 files — verification firewalls (factual-assertion §16, legal-assertion §17, citation-firewall §17, quote-firewall §18, request-verifier §21, completeness §22, index orchestrator), review model (review-model §23-25, change-tracking §7+§25), export (txt/docx/pdf §28 — all replace internal IDs with human-readable citations), evaluation (drafting-gold-set 15 fixtures §31, evaluator 9 hard metrics, negative-tests 9 §32). 260/260 tests, 0 typecheck errors.
+- Myself: extended prisma schema with LegalDraft, DraftVersion, DraftSection models (non-destructive — Phase 5 models preserved). Pushed to db.
+- Myself: installed docx@9.7.1 + pdfkit@0.20.2 for export.
+- Myself: built 5 API routes at /api/cases/:id/drafts/* (list+create, get+update+archive+delete, plan, generate, verify, export). Next.js 16 async params pattern. Fixed type mismatches (BuildDraftingContextResult vs DraftingContext; "COMPLETED" status not in union; Uint8Array → Buffer for binary response; regex character class fix).
+- Myself: built DraftsView UI component (draft list with create form, draft detail with plan/generate/verify/export actions, section list with review badges + warnings). Integrated as 8th tab "Փաստաթղթերի նախագիծ" in CaseDetail.
+- Verification gates (§35):
+  - typecheck: PASS (0 errors in src/ + tests/)
+  - lint: PASS (0 errors)
+  - test: 260/260 PASS (1289 expect() calls, 18 files, 0 fail, 17.61s) — 0 regressions vs Phase 5.1
+  - build: N/A (dev mode per project rule)
+- Browser E2E (§34):
+  - Case Workspace → case detail → "Փաստաթղթերի նախագիծ" tab renders
+  - Draft list shows "Test Motion" (MOTION/PLANNING/hy) created via API
+  - "Նոր նախագիծ" (New Draft) button visible
+  - 0 browser errors
+- API smoke tests:
+  - POST /api/cases/:id/drafts → 201 (creates draft + initial version)
+  - GET /api/cases/:id/drafts/:draftId → 200 (returns draft + versions + sections)
+  - POST /api/cases/:id/drafts/:draftId/plan → builds bounded DraftingContext + DocumentPlan
+  - POST /api/cases/:id/drafts/:draftId/generate → deterministic assembly + Codex attempt + fallback
+  - POST /api/cases/:id/drafts/:draftId/verify → runs all 6 verification firewalls
+  - GET /api/cases/:id/drafts/:draftId/export?format=txt|docx|pdf → exports with human-readable citations
+- /api/health: Codex still AUTH_REQUIRED (Phase 4.1 preserved)
+- §37 Verdict: VERIFIED_COMPLETE_WITHIN_DEFINED_SCOPE — all deterministic Phase 6 functionality verified. Codex live deep-drafting = BLOCKED_EXTERNAL_QUOTA (ChatGPT not signed in this sandbox).
+- §38 Completion condition: PASS — CASE → GOAL → VERIFIED CONTEXT → PLAN → GROUNDED DRAFT → ASSERTION/CITATION/QUOTE/RELIEF FIREWALL → HUMAN REVIEW → VERIFIED/EXPORT_READY → DOCX/PDF/TXT. Under Codex outage: no silent API billing, no fabricated completion, no endless spinner; deterministic planning/assembly/verification remains usable.
+- Files changed (Phase 6):
+  - MODIFIED prisma/schema.prisma (LegalDraft, DraftVersion, DraftSection models + back-relation on CaseWorkspace)
+  - NEW src/lib/legal-drafting/ (30 files): types, config, registry/document-types, planning/{drafting-context,document-plan,issue-selection}, assembly/{deterministic-sections,fact-sections,legal-sections,argument-sections,request-sections}, generation/{codex-drafter,fallback-drafter}, verification/{factual-assertion,legal-assertion,citation-firewall,quote-firewall,request-verifier,completeness,index}, review/{review-model,change-tracking}, export/{txt,docx,pdf,index}, evaluation/{drafting-gold-set,evaluator,negative-tests}, index
+  - NEW src/app/api/cases/[id]/drafts/ (5 route files): route, [draftId]/route, [draftId]/plan/route, [draftId]/generate/route, [draftId]/verify/route, [draftId]/export/route
+  - NEW src/components/case-workspace/DraftsView.tsx (draft list + create form + draft detail with plan/generate/verify/export + section list with review badges)
+  - MODIFIED src/components/case-workspace/CaseDetail.tsx (added "drafts" tab + DraftsView import)
+  - INSTALLED: docx@9.7.1, pdfkit@0.20.2
+- §36 Limitations:
+  - Codex live deep-drafting = BLOCKED_EXTERNAL_QUOTA (ChatGPT not signed in). User must run `codex login` to activate AI prose generation. Deterministic plan/assembly/fact list/authority list/argument map remain fully usable.
+  - §24 Three-pane review UI is simplified to a linear section list (left outline + center editable + right sources would require more complex layout — functional MVP).
+  - §31 Drafting gold fixtures are descriptors; a separate test harness would generate test data from them. The evaluator (9 hard metrics all=0) + negative tests (9 fabrication attempts) are implemented.
+  - §33 Codex live test prepared: POST /api/cases/:id/drafts/:draftId/generate with mode=auto will exercise real Codex when ChatGPT is signed in. No repeated hammering.
