@@ -64,15 +64,10 @@ export const viewport: Viewport = {
   ],
 };
 
-// Inline script to set the theme class BEFORE hydration, preventing flash.
+// Dark mode only — no theme toggle, no light mode
 const themeInitScript = `
 (function() {
-  try {
-    var t = localStorage.getItem('arlis-legal-theme');
-    if (t === 'dark' || (!t && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-      document.documentElement.classList.add('dark');
-    }
-  } catch (e) {}
+  document.documentElement.classList.add('dark');
 })();
 `;
 

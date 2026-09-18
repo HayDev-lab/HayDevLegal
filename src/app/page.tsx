@@ -5,7 +5,7 @@ import { SearchBox } from "@/components/legal/SearchBox";
 import { SearchResults } from "@/components/legal/SearchResults";
 import { AgentAnswer } from "@/components/legal/AgentAnswer";
 import { SearchingState, ErrorState, EmptyState } from "@/components/legal/States";
-import { ThemeToggle } from "@/components/legal/ThemeToggle";
+// ThemeToggle removed — dark mode only
 import { DateSensitivityBanner } from "@/components/legal/DateSensitivityBanner";
 import { SearchInsights } from "@/components/legal/SearchInsights";
 import { SearchTracePanel } from "@/components/legal/SearchTracePanel";
@@ -190,8 +190,8 @@ export default function Home() {
         backgroundAttachment: "fixed",
       }}
     >
-      {/* Floating tab bar — no header/logo, sits directly on background */}
-      <nav className="sticky top-0 z-30 flex items-center justify-center gap-2 px-4 pt-3 pb-2">
+      {/* Floating tab bar — positioned at top-right, doesn't cover logo */}
+      <nav className="sticky top-0 z-30 flex items-center justify-end gap-2 px-4 pt-3 pb-2">
         <button
           type="button"
           onClick={() => setTopTab("search")}
@@ -216,9 +216,6 @@ export default function Home() {
           <FolderOpen className="h-4 w-4" />
           Գործեր
         </button>
-        <div className="ml-2">
-          <ThemeToggle />
-        </div>
       </nav>
 
       {/* Compact search bar (results view) */}
